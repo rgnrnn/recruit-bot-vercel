@@ -1,12 +1,13 @@
 /**
  * api/telegram.js — Vercel webhook для Telegram (Node 20, ESM)
- * Q1 (согласие) → Q2 (имя). Анти-дубли через Upstash Redis.
+ * Q1 (согласие) → Q2 (имя) → Q3 (интересы, мультивыбор) → Q4 (стек, мультивыбор).
+ * Анти-дубли по update_id через Upstash Redis. Надёжный парсинг тела, логи, rate-limit.
  *
  * ENV (Vercel → Project → Settings → Environment Variables):
  * TELEGRAM_BOT_TOKEN        — токен бота
  * ADMIN_CHAT_ID             — id админа (опц.)
  * START_SECRET              — deep-link секрет (напр. INVITE)
- * REQUIRE_SECRET            — "1" или "true" чтобы требовать секрет строго (по умолчанию НЕ требуем)
+ * REQUIRE_SECRET            — "1"/"true" чтобы требовать секрет строго (по умолчанию НЕ требуем)
  * UPSTASH_REDIS_REST_URL    — https://*.upstash.io
  * UPSTASH_REDIS_REST_TOKEN  — <token>
  */
@@ -19,6 +20,16 @@ const REDIS_BASE   = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/$/, "
 const REDIS_TOKEN  = process.env.UPSTASH_REDIS_REST_TOKEN || "";
 
 const NO_CHAT = "Я не веду переписку — используй кнопки ниже 🙌";
+
+/* ---------- Справочники для Q3/Q4 ---------- */
+const A_INTERESTS = [
+  "Backend","Graph/Neo4j","Vector/LLM","Frontend",
+  "DevOps/MLOps","Data/ETL","Product/Coordination"
+];
+const A_STACK = [
+  "Python/FastAPI","PostgreSQL/SQL","Neo4j","pgvector",
+  "LangChain/LangGraph","React/TS","Docker/K8s/Linux","CI/GitHub"
+];
 
 /* -------------------- Redis (Upstash REST) -------------------- */
 
@@ -45,19 +56,18 @@ const rIncr = async (k, ex = 60) => {
   return j.result;
 };
 
-/** Дедуп: true = первый раз; false = явный дубль этого update_id.
- * ВАЖНО: при любых ошибках/неожиданных ответах — возвращаем true (НЕ отбрасываем апдейт). */
+/** Дедуп: true = первый раз; false = явный дубль (NX не сработал).
+ * При любой ошибке Redis — возвращаем true (не теряем апдейты). */
 async function seenUpdate(update_id) {
   try {
     const j = await rSet(`upd:${update_id}`, "1", { EX: 180, NX: true });
-    // Upstash: {result:"OK"} — ключ установлен; {result:null} — уже был (дубль).
     if (j && Object.prototype.hasOwnProperty.call(j, "result")) {
-      return j.result === "OK";           // true — первый раз, false — дубль
+      return j.result === "OK";
     }
-    return true;                           // странный ответ — лучше обработать, чем отбросить
+    return true;
   } catch (e) {
     console.warn("seenUpdate fallback (redis err):", e?.message || String(e));
-    return true;                           // при ошибке Redis — обрабатываем, чтобы не терять апдейты
+    return true;
   }
 }
 async function overRL(uid, limit = 12) {
@@ -67,9 +77,15 @@ async function overRL(uid, limit = 12) {
 async function getSess(uid) {
   try {
     const j = await rGet(`sess:${uid}`);
-    if (!j?.result) return { step:"consent", consent:"", name:"" };
-    try { return JSON.parse(j.result); } catch { return { step:"consent", consent:"", name:"" }; }
-  } catch { return { step:"consent", consent:"", name:"" }; }
+    const base = { step:"consent", consent:"", name:"", interests:[], stack:[] };
+    if (!j?.result) return base;
+    try {
+      const s = JSON.parse(j.result);
+      if (!Array.isArray(s.interests)) s.interests = [];
+      if (!Array.isArray(s.stack)) s.stack = [];
+      return Object.assign(base, s);
+    } catch { return base; }
+  } catch { return { step:"consent", consent:"", name:"", interests:[], stack:[] }; }
 }
 async function putSess(uid, s) { try { await rSet(`sess:${uid}`, JSON.stringify(s), { EX: 21600 }); } catch {} }
 async function delSess(uid)     { try { await rDel(`sess:${uid}`); } catch {} }
@@ -90,16 +106,13 @@ async function tg(method, payload) {
     console.error("tg network error:", method, e?.message || String(e));
     return { ok: false, error: "network" };
   }
-  if (!json?.ok) {
-    console.error("tg api error:", method, JSON.stringify(json).slice(0, 500));
-  }
+  if (!json?.ok) console.error("tg api error:", method, JSON.stringify(json).slice(0, 500));
   return json;
 }
 
 /* -------------------- Body parsing -------------------- */
 
 async function readBody(req) {
-  // Vercel может отдавать body объектом, строкой или потоком
   if (req.body) {
     try { return typeof req.body === "string" ? JSON.parse(req.body) : req.body; }
     catch { /* fallthrough */ }
@@ -119,6 +132,14 @@ function consentKeyboard() {
     ]]
   });
 }
+function multiKb(prefix, options, selected) {
+  const rows = options.map(o => ([
+    { text: `${selected.includes(o) ? "☑️" : "⬜️"} ${o}`, callback_data: `${prefix}:${o}` }
+  ]));
+  rows.push([{ text: "Дальше ➜", callback_data: `${prefix}:next` }]);
+  return JSON.stringify({ inline_keyboard: rows });
+}
+
 async function sendWelcome(chat, uid) {
   console.log("sendWelcome", { uid, chat });
   await tg("sendMessage", {
@@ -139,113 +160,13 @@ async function sendNamePrompt(chat, uid, username) {
     reply_markup: rm,
   });
 }
-
-/* -------------------- HTTP entry (Vercel) -------------------- */
-
-export default async function handler(req, res) {
-  if (req.method !== "POST") { res.status(200).send("OK"); return; }
-  const upd = await readBody(req);
-
-  try { console.log("HOOK:", JSON.stringify({ id: upd.update_id, msg: !!upd.message, cb: !!upd.callback_query })); } catch {}
-
-  try {
-    // Анти-дубли по update_id (но НЕ отбрасываем при ошибках Redis)
-    if (upd.update_id && !(await seenUpdate(upd.update_id))) {
-      res.status(200).send("OK"); return;
-    }
-    if (upd.message)             await onMessage(upd.message);
-    else if (upd.callback_query) await onCallback(upd.callback_query);
-  } catch (e) {
-    console.error("handler error:", e?.stack || e?.message || String(e));
-  }
-  res.status(200).send("OK");
+async function sendInterestsPrompt(chat, uid, s) {
+  console.log("sendInterests", { uid });
+  await tg("sendMessage", {
+    chat_id: chat,
+    text: "3) Что интереснее 3–6 мес.? (мультивыбор, повторное нажатие снимает)",
+    parse_mode: "HTML",
+    reply_markup: multiKb("q3", A_INTERESTS, s.interests || []),
+  });
 }
-
-/* -------------------- Handlers -------------------- */
-
-async function onMessage(m) {
-  const uid  = m.from.id;
-  if (await overRL(uid)) return;
-
-  const chat = m.chat.id;
-  const text = (m.text || "").trim();
-  try { console.log("onMessage:", { uid, text }); } catch {}
-
-  // Диагностика
-  if (text.toLowerCase() === "/ping") { await tg("sendMessage", { chat_id: chat, text: "pong ✅" }); return; }
-
-  if (text.startsWith("/start")) {
-    // deep-link: по умолчанию НЕ требуем секрет, чтобы не стопориться
-    const payload = text.split(" ").slice(1).join(" ").trim();
-    const hasSecret = payload && START_SECRET && payload.includes(START_SECRET);
-    if (REQUIRE_SEC && !hasSecret && String(uid) !== String(ADMIN_ID)) {
-      await tg("sendMessage", { chat_id: chat, text: `Нужен ключ доступа. Открой ссылку:\nhttps://t.me/rgnr_assistant_bot?start=${encodeURIComponent(START_SECRET || "INVITE")}` });
-      return;
-    }
-
-    const s = await getSess(uid);
-    if (s.step && s.step !== "consent") {
-      await tg("sendMessage", { chat_id: chat, text: "Анкета уже начата — продолжаем ⬇️" });
-      if (s.step === "name") await sendNamePrompt(chat, uid, m.from.username);
-      return;
-    }
-
-    await delSess(uid);
-    await putSess(uid, { step: "consent", consent: "", name: "" });
-    await sendWelcome(chat, uid); // экран с «✅/❌»
-    return;
-  }
-
-  // Текст принимаем только на шаге "name"
-  const s = await getSess(uid);
-  if (s.step === "name") {
-    s.name = text.slice(0, 80);
-    s.step = "hold";
-    await putSess(uid, s);
-    await tg("sendMessage", { chat_id: chat, text: `✅ Ок, ${s.name}. Следующий шаг добавим далее.` });
-    return;
-  }
-
-  await tg("sendMessage", { chat_id: chat, text: NO_CHAT });
-}
-
-async function onCallback(q) {
-  const uid  = q.from.id;
-  if (await overRL(uid)) return;
-
-  const chat = q.message.chat.id;
-  const mid  = q.message.message_id;
-  const data = q.data || "";
-
-  try { await tg("answerCallbackQuery", { callback_query_id: q.id }); } catch {}
-
-  let s = await getSess(uid);
-
-  if (data === "consent_yes") {
-    if (s.step !== "consent") return; // идемпотентность шага
-    s.consent = "yes";
-    s.step    = "name";
-    await putSess(uid, s);
-    await tg("editMessageText", { chat_id: chat, message_id: mid, text: "✅ Спасибо за согласие на связь.", parse_mode: "HTML" });
-    await sendNamePrompt(chat, uid, q.from.username);
-    return;
-  }
-
-  if (data === "consent_no") {
-    if (s.step !== "consent") return;
-    await tg("editMessageText", { chat_id: chat, message_id: mid, text: "Ок. Если передумаешь — /start" });
-    await delSess(uid);
-    return;
-  }
-
-  if (data === "name_use_username") {
-    if (s.step !== "name") return;
-    s.name = q.from.username ? `@${q.from.username}` : String(uid);
-    s.step = "hold";
-    await putSess(uid, s);
-    await tg("sendMessage", { chat_id: chat, text: `✅ Ок, ${s.name}. Следующий шаг добавим далее.` });
-    return;
-  }
-
-  // всё остальное игнор
-}
+async fun
