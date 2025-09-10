@@ -1,5 +1,6 @@
 // api/telegram.js — Telegram webhook (Vercel, Node 20, ESM)
 // FSM: Q1 consent -> Q2 name -> Q3 interests (multi) -> Q4 stack (multi)
+// Добавлено: перезапуск анкеты (🔁 Начать заново / /reset / «заново»), run_id + started_at
 
 const TOKEN        = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID     = process.env.ADMIN_CHAT_ID || "";
@@ -57,16 +58,34 @@ async function overRL(uid, limit) {
   try { return (await rIncr(`rl:${uid}`, 60)) > (limit || 12); }
   catch { return false; }
 }
+async function notifyOnce(uid, tag, ttlSec) {
+  try {
+    const j = await rSet(`note:${uid}:${tag}`, "1", { EX: ttlSec || 6, NX: true });
+    return j.result === "OK";
+  } catch { return true; }
+}
+function newRunSession() {
+  return {
+    run_id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`,
+    started_at: new Date().toISOString(),
+    step: "consent",
+    consent: "",
+    name: "",
+    interests: [],
+    stack: []
+  };
+}
 async function getSess(uid) {
   try {
     const j = await rGet(`sess:${uid}`);
-    const base = { step:"consent", consent:"", name:"", interests:[], stack:[] };
-    if (!j?.result) return base;
-    let s; try { s = JSON.parse(j.result); } catch { return base; }
+    if (!j?.result) return newRunSession();
+    let s; try { s = JSON.parse(j.result); } catch { return newRunSession(); }
     if (!Array.isArray(s.interests)) s.interests = [];
     if (!Array.isArray(s.stack)) s.stack = [];
-    return Object.assign(base, s);
-  } catch { return { step:"consent", consent:"", name:"", interests:[], stack:[] }; }
+    if (!s.run_id) s.run_id = newRunSession().run_id;
+    if (!s.started_at) s.started_at = new Date().toISOString();
+    return s;
+  } catch { return newRunSession(); }
 }
 async function putSess(uid, s) { try { await rSet(`sess:${uid}`, JSON.stringify(s), { EX:21600 }); } catch {} }
 async function delSess(uid)     { try { await rDel(`sess:${uid}`); } catch {} }
@@ -112,6 +131,14 @@ function consentKeyboard() {
     ]]
   });
 }
+function continueOrResetKb() {
+  return JSON.stringify({
+    inline_keyboard: [[
+      { text:"▶️ Продолжить",     callback_data:"continue"    },
+      { text:"🔁 Начать заново",  callback_data:"reset_start" }
+    ]]
+  });
+}
 function multiKb(prefix, options, selected) {
   const rows = options.map(o => ([{ text:`${selected.includes(o) ? "☑️" : "⬜️"} ${o}`, callback_data:`${prefix}:${o}` }]));
   rows.push([{ text:"Дальше ➜", callback_data:`${prefix}:next` }]);
@@ -138,7 +165,7 @@ async function sendNamePrompt(chat, uid, username) {
   });
 }
 async function sendInterestsPrompt(chat, uid, s) {
-  console.log("sendInterests", { uid });
+  console.log("sendInterests", { uid, run: s.run_id });
   await tg("sendMessage", {
     chat_id: chat,
     text: "3) Что интереснее 3–6 мес.? (мультивыбор, повторное нажатие снимает)",
@@ -147,7 +174,7 @@ async function sendInterestsPrompt(chat, uid, s) {
   });
 }
 async function sendStackPrompt(chat, uid, s) {
-  console.log("sendStack", { uid });
+  console.log("sendStack", { uid, run: s.run_id });
   await tg("sendMessage", {
     chat_id: chat,
     text: "4) Уверенный стек (мультивыбор):",
@@ -176,6 +203,24 @@ export default async function handler(req, res) {
 
 /* ---------------- Handlers ---------------- */
 
+async function resetFlow(uid, chat) {
+  const s = newRunSession();
+  await putSess(uid, s);
+  await tg("sendMessage", {
+    chat_id: chat,
+    text: "🔁 Начинаем заново — это новая попытка. Предыдущие ответы будут сохранены отдельно при записи в базу.",
+  });
+  await sendWelcome(chat, uid);
+}
+
+async function continueFlow(uid, chat, s, username) {
+  if (s.step === "name")        { await sendNamePrompt(chat, uid, username); return; }
+  if (s.step === "interests")   { await sendInterestsPrompt(chat, uid, s);   return; }
+  if (s.step === "stack")       { await sendStackPrompt(chat, uid, s);       return; }
+  // если вдруг другое — вернём к началу текущей попытки
+  await sendWelcome(chat, uid);
+}
+
 async function onMessage(m) {
   const uid = m.from.id;
   if (await overRL(uid, 12)) return;
@@ -185,6 +230,7 @@ async function onMessage(m) {
   try { console.log("onMessage:", { uid, text }); } catch {}
 
   if (text.toLowerCase() === "/ping") { await tg("sendMessage", { chat_id: chat, text: "pong ✅" }); return; }
+  if (text.toLowerCase() === "/reset" || text.toLowerCase() === "заново") { await resetFlow(uid, chat); return; }
 
   if (text.startsWith("/start")) {
     const payload = text.split(" ").slice(1).join(" ").trim();
@@ -195,14 +241,19 @@ async function onMessage(m) {
     }
     const s = await getSess(uid);
     if (s.step && s.step !== "consent") {
-      await tg("sendMessage", { chat_id: chat, text: "Анкета уже начата — продолжаем ⬇️" });
-      if (s.step === "name")        await sendNamePrompt(chat, uid, m.from.username);
-      else if (s.step === "interests") await sendInterestsPrompt(chat, uid, s);
-      else if (s.step === "stack")     await sendStackPrompt(chat, uid, s);
+      // чтобы не спамить — показываем Continue/Reset не чаще, чем раз в 6 сек
+      if (await notifyOnce(uid, "cont", 6)) {
+        await tg("sendMessage", {
+          chat_id: chat,
+          text: "Анкета уже начата — продолжать или начать заново?",
+          reply_markup: continueOrResetKb()
+        });
+      }
       return;
     }
-    await delSess(uid);
-    await putSess(uid, { step:"consent", consent:"", name:"", interests:[], stack:[] });
+    // новая попытка
+    const s2 = newRunSession();
+    await putSess(uid, s2);
     await sendWelcome(chat, uid);
     return;
   }
@@ -231,6 +282,15 @@ async function onCallback(q) {
 
   let s = await getSess(uid);
 
+  if (data === "continue") {
+    await continueFlow(uid, chat, s, q.from.username);
+    return;
+  }
+  if (data === "reset_start") {
+    await resetFlow(uid, chat);
+    return;
+  }
+
   if (data === "consent_yes") {
     if (s.step !== "consent") return;
     s.consent = "yes"; s.step = "name";
@@ -258,7 +318,6 @@ async function onCallback(q) {
   if (data.startsWith("q3:")) {
     if (s.step !== "interests") return;
     const opt = data.split(":")[1];
-    if (!Array.isArray(s.interests)) s.interests = [];
     if (opt === "next") {
       s.step = "stack";
       await putSess(uid, s);
@@ -276,7 +335,6 @@ async function onCallback(q) {
   if (data.startsWith("q4:")) {
     if (s.step !== "stack") return;
     const opt = data.split(":")[1];
-    if (!Array.isArray(s.stack)) s.stack = [];
     if (opt === "next") {
       s.step = "paused";
       await putSess(uid, s);
