@@ -89,42 +89,55 @@ export default async function handler(req, res){
 
 /* ---------- Handlers ---------- */
 async function onMessage(m){
-  const uid = m.from.id; if (await overRL(uid)) return;
+  const uid  = m.from.id;
+  if (await overRL(uid)) return;
+
   const chat = m.chat.id;
-  const text = (m.text||"").trim();
+  const text = (m.text || "").trim();
+  try { console.log("onMessage:", { uid, text }); } catch {}
 
   // Диагностика
-  if (text.toLowerCase() === "/ping") { await tg("sendMessage", { chat_id: chat, text: "pong ✅" }); return; }
-
-  if (text.startsWith("/start")){
-    // deep-link
-    const payload = text.split(" ").slice(1).join(" ").trim();
-    if (START_SECRET && (!payload || !payload.includes(START_SECRET))) {
-      await tg("sendMessage", { chat_id: chat, text: `Нужен секрет. Открой ссылку:\nhttps://t.me/rgnr_assistant_bot?start=${encodeURIComponent(START_SECRET)}`});
-      return;
-    }
-    const s = await getSess(uid);
-    if (s.step && s.step !== "consent"){
-      await tg("sendMessage", { chat_id: chat, text: "Анкета уже начата — продолжаем ⬇️" });
-      if (s.step==="name") await sendNamePrompt(chat, uid, m.from.username);
-      return;
-    }
-    await delSess(uid);
-    await putSess(uid, { step:"consent", consent:"", name:"" });
-    await sendWelcome(chat, uid);
+  if (text.toLowerCase() === "/ping") {
+    await tg("sendMessage", { chat_id: chat, text: "pong ✅" });
     return;
   }
 
-  // Текст принимаем только на шаге "name"
+  if (text.startsWith("/start")) {
+    // РАНЬШЕ: требовали обязательный payload `INVITE`.
+    // СЕЙЧАС: если payload есть и он НЕ содержит секрет — отклоняем.
+    // Если payload пустой — ПРОПУСКАЕМ (временно, чтобы не стопориться).
+    const payload = text.split(" ").slice(1).join(" ").trim();
+    if (payload && START_SECRET && !payload.includes(START_SECRET) && String(uid) !== String(ADMIN_ID)) {
+      await tg("sendMessage", { chat_id: chat, text: "Неверный ключ доступа. Попроси свежую ссылку у администратора." });
+      return;
+    }
+
+    const s = await getSess(uid);
+    if (s.step && s.step !== "consent") {
+      await tg("sendMessage", { chat_id: chat, text: "Анкета уже начата — продолжаем ⬇️" });
+      if (s.step === "name") await sendNamePrompt(chat, uid, m.from.username);
+      return;
+    }
+
+    await delSess(uid);
+    await putSess(uid, { step: "consent", consent: "", name: "" });
+    await sendWelcome(chat, uid);  // Экран «Согласен на связь»
+    return;
+  }
+
+  // Текст принимаем только на шаге name
   const s = await getSess(uid);
-  if (s.step === "name"){
-    s.name = text.slice(0,80); s.step = "hold"; await putSess(uid, s);
+  if (s.step === "name") {
+    s.name = text.slice(0, 80);
+    s.step = "hold";
+    await putSess(uid, s);
     await tg("sendMessage", { chat_id: chat, text: `✅ Ок, ${s.name}. Следующий шаг добавим далее.` });
     return;
   }
 
   await tg("sendMessage", { chat_id: chat, text: NO_CHAT });
 }
+
 
 async function onCallback(q){
   const uid = q.from.id; if (await overRL(uid)) return;
