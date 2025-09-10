@@ -1,6 +1,6 @@
 // api/telegram.js — Telegram webhook (Vercel, Node 20, ESM)
 // FSM: Q1 consent -> Q2 name -> Q3 interests (multi) -> Q4 stack (multi)
-// Добавлено: перезапуск анкеты (🔁 Начать заново / /reset / «заново»), run_id + started_at
+// Supports: 🔁 reset flow (button/command), run_id, anti-duplicate updates, rate-limit
 
 const TOKEN        = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID     = process.env.ADMIN_CHAT_ID || "";
@@ -45,14 +45,12 @@ const rIncr = async (k, ex)=> {
   return j.result;
 };
 
-// true = первый раз; false = явный дубль; при ошибке — true (не теряем апдейты)
+// true=первый раз; false=дубль; при ошибке Redis — true (ничего не теряем)
 async function seenUpdate(update_id) {
   try {
     const j = await rSet(`upd:${update_id}`, "1", { EX: 180, NX: true });
     return j && Object.prototype.hasOwnProperty.call(j, "result") ? j.result === "OK" : true;
-  } catch {
-    return true;
-  }
+  } catch { return true; }
 }
 async function overRL(uid, limit) {
   try { return (await rIncr(`rl:${uid}`, 60)) > (limit || 12); }
@@ -208,7 +206,7 @@ async function resetFlow(uid, chat) {
   await putSess(uid, s);
   await tg("sendMessage", {
     chat_id: chat,
-    text: "🔁 Начинаем заново — это новая попытка. Предыдущие ответы будут сохранены отдельно при записи в базу.",
+    text: "🔁 Начинаем заново — это новая попытка. Предыдущие ответы будут сохранены отдельно при записи в базу."
   });
   await sendWelcome(chat, uid);
 }
@@ -217,7 +215,6 @@ async function continueFlow(uid, chat, s, username) {
   if (s.step === "name")        { await sendNamePrompt(chat, uid, username); return; }
   if (s.step === "interests")   { await sendInterestsPrompt(chat, uid, s);   return; }
   if (s.step === "stack")       { await sendStackPrompt(chat, uid, s);       return; }
-  // если вдруг другое — вернём к началу текущей попытки
   await sendWelcome(chat, uid);
 }
 
@@ -241,7 +238,6 @@ async function onMessage(m) {
     }
     const s = await getSess(uid);
     if (s.step && s.step !== "consent") {
-      // чтобы не спамить — показываем Continue/Reset не чаще, чем раз в 6 сек
       if (await notifyOnce(uid, "cont", 6)) {
         await tg("sendMessage", {
           chat_id: chat,
@@ -251,7 +247,6 @@ async function onMessage(m) {
       }
       return;
     }
-    // новая попытка
     const s2 = newRunSession();
     await putSess(uid, s2);
     await sendWelcome(chat, uid);
@@ -282,14 +277,8 @@ async function onCallback(q) {
 
   let s = await getSess(uid);
 
-  if (data === "continue") {
-    await continueFlow(uid, chat, s, q.from.username);
-    return;
-  }
-  if (data === "reset_start") {
-    await resetFlow(uid, chat);
-    return;
-  }
+  if (data === "continue")    { await continueFlow(uid, chat, s, q.from.username); return; }
+  if (data === "reset_start") { await resetFlow(uid, chat); return; }
 
   if (data === "consent_yes") {
     if (s.step !== "consent") return;
