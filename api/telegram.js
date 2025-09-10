@@ -1,23 +1,22 @@
 /**
- * api/telegram.js — Vercel webhook для Telegram
+ * api/telegram.js — Vercel webhook для Telegram (Node 20, ESM)
  * Q1 (согласие) → Q2 (имя). Анти-дубли через Upstash Redis.
- * Node 20, ESM, глобальный fetch.
  *
  * ENV (Vercel → Project → Settings → Environment Variables):
- * TELEGRAM_BOT_TOKEN   — токен бота
- * ADMIN_CHAT_ID        — id админа (опц.)
- * START_SECRET         — deep-link секрет (напр. INVITE)
- * REQUIRE_SECRET       — "1" чтобы требовать секрет строго (по умолчанию НЕ требуем)
- * UPSTASH_REDIS_REST_URL
- * UPSTASH_REDIS_REST_TOKEN
+ * TELEGRAM_BOT_TOKEN        — токен бота
+ * ADMIN_CHAT_ID             — id админа (опц.)
+ * START_SECRET              — deep-link секрет (напр. INVITE)
+ * REQUIRE_SECRET            — "1" или "true" чтобы требовать секрет строго (по умолчанию НЕ требуем)
+ * UPSTASH_REDIS_REST_URL    — https://*.upstash.io
+ * UPSTASH_REDIS_REST_TOKEN  — <token>
  */
 
-const TOKEN         = process.env.TELEGRAM_BOT_TOKEN;
-const ADMIN_ID      = process.env.ADMIN_CHAT_ID || "";
-const START_SECRET  = process.env.START_SECRET || "";
-const REQUIRE_SEC   = /^1|true$/i.test(process.env.REQUIRE_SECRET || "");
-const REDIS_BASE    = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/$/, "");
-const REDIS_TOKEN   = process.env.UPSTASH_REDIS_REST_TOKEN || "";
+const TOKEN        = process.env.TELEGRAM_BOT_TOKEN;
+const ADMIN_ID     = process.env.ADMIN_CHAT_ID || "";
+const START_SECRET = process.env.START_SECRET || "";
+const REQUIRE_SEC  = /^1|true$/i.test(process.env.REQUIRE_SECRET || "");
+const REDIS_BASE   = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/$/, "");
+const REDIS_TOKEN  = process.env.UPSTASH_REDIS_REST_TOKEN || "";
 
 const NO_CHAT = "Я не веду переписку — используй кнопки ниже 🙌";
 
@@ -25,8 +24,7 @@ const NO_CHAT = "Я не веду переписку — используй кн
 
 function rUrl(path) {
   if (!REDIS_BASE || !REDIS_TOKEN) throw new Error("Redis env missing");
-  const u = new URL(REDIS_BASE + path);
-  return u;
+  return new URL(REDIS_BASE + path);
 }
 async function rGET(path) {
   const res = await fetch(rUrl(path), { headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
@@ -41,22 +39,28 @@ async function rCall(path, qs = {}) {
 const rSet  = (k, v, qs)=> rCall(`/set/${encodeURIComponent(k)}/${encodeURIComponent(v)}`, qs);
 const rGet  = (k)=> rGET(`/get/${encodeURIComponent(k)}`);
 const rDel  = (k)=> rGET(`/del/${encodeURIComponent(k)}`);
-const rIncr = async (k, ex=60)=> {
+const rIncr = async (k, ex = 60) => {
   const j = await rGET(`/incr/${encodeURIComponent(k)}`);
   if (j.result === 1) await rGET(`/expire/${encodeURIComponent(k)}/${ex}`);
   return j.result;
 };
 
+/** Дедуп: true = первый раз; false = явный дубль этого update_id.
+ * ВАЖНО: при любых ошибках/неожиданных ответах — возвращаем true (НЕ отбрасываем апдейт). */
 async function seenUpdate(update_id) {
   try {
     const j = await rSet(`upd:${update_id}`, "1", { EX: 180, NX: true });
-    return j.result === "OK"; // true => первый раз
-  } catch {
-    // если Redis недоступен — не роняем обработку
-    return true;
+    // Upstash: {result:"OK"} — ключ установлен; {result:null} — уже был (дубль).
+    if (j && Object.prototype.hasOwnProperty.call(j, "result")) {
+      return j.result === "OK";           // true — первый раз, false — дубль
+    }
+    return true;                           // странный ответ — лучше обработать, чем отбросить
+  } catch (e) {
+    console.warn("seenUpdate fallback (redis err):", e?.message || String(e));
+    return true;                           // при ошибке Redis — обрабатываем, чтобы не терять апдейты
   }
 }
-async function overRL(uid, limit=12) {
+async function overRL(uid, limit = 12) {
   try { return (await rIncr(`rl:${uid}`, 60)) > limit; }
   catch { return false; }
 }
@@ -67,12 +71,8 @@ async function getSess(uid) {
     try { return JSON.parse(j.result); } catch { return { step:"consent", consent:"", name:"" }; }
   } catch { return { step:"consent", consent:"", name:"" }; }
 }
-async function putSess(uid, s) {
-  try { await rSet(`sess:${uid}`, JSON.stringify(s), { EX: 21600 }); } catch {}
-}
-async function delSess(uid) {
-  try { await rDel(`sess:${uid}`); } catch {}
-}
+async function putSess(uid, s) { try { await rSet(`sess:${uid}`, JSON.stringify(s), { EX: 21600 }); } catch {} }
+async function delSess(uid)     { try { await rDel(`sess:${uid}`); } catch {} }
 
 /* -------------------- Telegram API -------------------- */
 
@@ -119,7 +119,6 @@ function consentKeyboard() {
     ]]
   });
 }
-
 async function sendWelcome(chat, uid) {
   console.log("sendWelcome", { uid, chat });
   await tg("sendMessage", {
@@ -129,7 +128,6 @@ async function sendWelcome(chat, uid) {
     reply_markup: consentKeyboard(),
   });
 }
-
 async function sendNamePrompt(chat, uid, username) {
   console.log("sendNamePrompt", { uid, chat, username });
   const btn = username ? { text:`Использовать @${username}`, callback_data:"name_use_username" } : null;
@@ -151,17 +149,15 @@ export default async function handler(req, res) {
   try { console.log("HOOK:", JSON.stringify({ id: upd.update_id, msg: !!upd.message, cb: !!upd.callback_query })); } catch {}
 
   try {
-    // Анти-дубли по update_id (если Redis жив)
+    // Анти-дубли по update_id (но НЕ отбрасываем при ошибках Redis)
     if (upd.update_id && !(await seenUpdate(upd.update_id))) {
       res.status(200).send("OK"); return;
     }
-
     if (upd.message)             await onMessage(upd.message);
     else if (upd.callback_query) await onCallback(upd.callback_query);
   } catch (e) {
     console.error("handler error:", e?.stack || e?.message || String(e));
   }
-
   res.status(200).send("OK");
 }
 
@@ -176,10 +172,7 @@ async function onMessage(m) {
   try { console.log("onMessage:", { uid, text }); } catch {}
 
   // Диагностика
-  if (text.toLowerCase() === "/ping") {
-    await tg("sendMessage", { chat_id: chat, text: "pong ✅" });
-    return;
-  }
+  if (text.toLowerCase() === "/ping") { await tg("sendMessage", { chat_id: chat, text: "pong ✅" }); return; }
 
   if (text.startsWith("/start")) {
     // deep-link: по умолчанию НЕ требуем секрет, чтобы не стопориться
@@ -199,7 +192,7 @@ async function onMessage(m) {
 
     await delSess(uid);
     await putSess(uid, { step: "consent", consent: "", name: "" });
-    await sendWelcome(chat, uid);     // экран с «✅/❌»
+    await sendWelcome(chat, uid); // экран с «✅/❌»
     return;
   }
 
@@ -229,7 +222,7 @@ async function onCallback(q) {
   let s = await getSess(uid);
 
   if (data === "consent_yes") {
-    if (s.step !== "consent") return;    // идемпотентность шага
+    if (s.step !== "consent") return; // идемпотентность шага
     s.consent = "yes";
     s.step    = "name";
     await putSess(uid, s);
@@ -254,5 +247,5 @@ async function onCallback(q) {
     return;
   }
 
-  // остальное игнорируем — бот не чатится
+  // всё остальное игнор
 }
