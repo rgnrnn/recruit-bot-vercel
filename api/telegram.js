@@ -1,94 +1,173 @@
-// api/telegram.js — Q1 (consent) + Q2 (name) с анти-дублями на Upstash Redis.
-// Минимум зависимостей: используем глобальный fetch (Node 20 на Vercel).
+/**
+ * api/telegram.js — Vercel webhook для Telegram
+ * Q1 (согласие) → Q2 (имя). Анти-дубли через Upstash Redis.
+ * Node 20, ESM, глобальный fetch.
+ *
+ * ENV (Vercel → Project → Settings → Environment Variables):
+ * TELEGRAM_BOT_TOKEN   — токен бота
+ * ADMIN_CHAT_ID        — id админа (опц.)
+ * START_SECRET         — deep-link секрет (напр. INVITE)
+ * REQUIRE_SECRET       — "1" чтобы требовать секрет строго (по умолчанию НЕ требуем)
+ * UPSTASH_REDIS_REST_URL
+ * UPSTASH_REDIS_REST_TOKEN
+ */
 
-const TOKEN       = process.env.TELEGRAM_BOT_TOKEN;
-const ADMIN_ID    = process.env.ADMIN_CHAT_ID || "";
-const START_SECRET= process.env.START_SECRET || "INVITE";
-const REDIS_BASE  = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/$/,"");
-const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
+const TOKEN         = process.env.TELEGRAM_BOT_TOKEN;
+const ADMIN_ID      = process.env.ADMIN_CHAT_ID || "";
+const START_SECRET  = process.env.START_SECRET || "";
+const REQUIRE_SEC   = /^1|true$/i.test(process.env.REQUIRE_SECRET || "");
+const REDIS_BASE    = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/$/, "");
+const REDIS_TOKEN   = process.env.UPSTASH_REDIS_REST_TOKEN || "";
 
 const NO_CHAT = "Я не веду переписку — используй кнопки ниже 🙌";
 
-/* ---------- Redis helpers (REST) ---------- */
-async function r(path, qs) {
-  const url = new URL(REDIS_BASE + path);
-  if (qs) Object.entries(qs).forEach(([k,v])=> url.searchParams.set(k, String(v)));
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${REDIS_TOKEN}` }});
+/* -------------------- Redis (Upstash REST) -------------------- */
+
+function rUrl(path) {
+  if (!REDIS_BASE || !REDIS_TOKEN) throw new Error("Redis env missing");
+  const u = new URL(REDIS_BASE + path);
+  return u;
+}
+async function rGET(path) {
+  const res = await fetch(rUrl(path), { headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
   return res.json();
 }
-const rGet  = (k)=> r(`/get/${encodeURIComponent(k)}`);
-const rDel  = (k)=> r(`/del/${encodeURIComponent(k)}`);
-const rSet  = (k,v,opts={})=> r(`/set/${encodeURIComponent(k)}/${encodeURIComponent(v)}`, opts);
-const rIncr = async (k, ex=60)=>{ const j=await r(`/incr/${encodeURIComponent(k)}`); if(j.result===1) await r(`/expire/${encodeURIComponent(k)}/${ex}`); return j.result; };
-
-async function seenUpdate(id){ const j = await rSet(`upd:${id}`, "1", { EX:180, NX:true }); return j.result==="OK"; }  // true => первый раз
-async function renderOnce(uid, stage, ttl=300){ const j = await rSet(`rend:${uid}:${stage}`, "1", { EX:ttl, NX:true }); return j.result==="OK"; }
-async function overRL(uid, limit=12){ return (await rIncr(`rl:${uid}`, 60)) > limit; }
-async function getSess(uid){
-  const j = await rGet(`sess:${uid}`); if(!j?.result) return { step:"consent", consent:"", name:"" };
-  try { return JSON.parse(j.result); } catch { return { step:"consent", consent:"", name:"" }; }
-}
-async function putSess(uid,s){ await rSet(`sess:${uid}`, JSON.stringify(s), { EX:21600 }); }
-async function delSess(uid){ await rDel(`sess:${uid}`); }
-
-/* ---------- Telegram API ---------- */
-async function tg(method, payload){
-  const url = `https://api.telegram.org/bot${TOKEN}/${method}`;
-  const res = await fetch(url, { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify(payload) });
+async function rCall(path, qs = {}) {
+  const url = rUrl(path);
+  Object.entries(qs).forEach(([k, v]) => url.searchParams.set(k, String(v)));
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
   return res.json();
 }
-const kb = (obj)=> JSON.stringify(obj);
-const consentKb = ()=> kb({ inline_keyboard: [[
-  { text:"✅ Согласен на связь", callback_data:"consent_yes" },
-  { text:"❌ Не сейчас",        callback_data:"consent_no"  }
-]]});
+const rSet  = (k, v, qs)=> rCall(`/set/${encodeURIComponent(k)}/${encodeURIComponent(v)}`, qs);
+const rGet  = (k)=> rGET(`/get/${encodeURIComponent(k)}`);
+const rDel  = (k)=> rGET(`/del/${encodeURIComponent(k)}`);
+const rIncr = async (k, ex=60)=> {
+  const j = await rGET(`/incr/${encodeURIComponent(k)}`);
+  if (j.result === 1) await rGET(`/expire/${encodeURIComponent(k)}/${ex}`);
+  return j.result;
+};
 
-/* ---------- Body parsing ---------- */
-async function readBody(req){
-  if (req.body) {
-    try { return typeof req.body === "string" ? JSON.parse(req.body) : req.body; } catch {}
+async function seenUpdate(update_id) {
+  try {
+    const j = await rSet(`upd:${update_id}`, "1", { EX: 180, NX: true });
+    return j.result === "OK"; // true => первый раз
+  } catch {
+    // если Redis недоступен — не роняем обработку
+    return true;
   }
-  let raw=""; for await (const ch of req) raw += Buffer.isBuffer(ch)? ch.toString("utf8"): String(ch);
-  try { return JSON.parse(raw||"{}"); } catch { return {}; }
+}
+async function overRL(uid, limit=12) {
+  try { return (await rIncr(`rl:${uid}`, 60)) > limit; }
+  catch { return false; }
+}
+async function getSess(uid) {
+  try {
+    const j = await rGet(`sess:${uid}`);
+    if (!j?.result) return { step:"consent", consent:"", name:"" };
+    try { return JSON.parse(j.result); } catch { return { step:"consent", consent:"", name:"" }; }
+  } catch { return { step:"consent", consent:"", name:"" }; }
+}
+async function putSess(uid, s) {
+  try { await rSet(`sess:${uid}`, JSON.stringify(s), { EX: 21600 }); } catch {}
+}
+async function delSess(uid) {
+  try { await rDel(`sess:${uid}`); } catch {}
 }
 
-/* ---------- One-time screens ---------- */
-async function sendWelcome(chat, uid){
-  if (!(await renderOnce(uid,"welcome"))) return;
+/* -------------------- Telegram API -------------------- */
+
+async function tg(method, payload) {
+  const url = `https://api.telegram.org/bot${TOKEN}/${method}`;
+  let json;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    json = await res.json();
+  } catch (e) {
+    console.error("tg network error:", method, e?.message || String(e));
+    return { ok: false, error: "network" };
+  }
+  if (!json?.ok) {
+    console.error("tg api error:", method, JSON.stringify(json).slice(0, 500));
+  }
+  return json;
+}
+
+/* -------------------- Body parsing -------------------- */
+
+async function readBody(req) {
+  // Vercel может отдавать body объектом, строкой или потоком
+  if (req.body) {
+    try { return typeof req.body === "string" ? JSON.parse(req.body) : req.body; }
+    catch { /* fallthrough */ }
+  }
+  let raw = "";
+  for await (const chunk of req) raw += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+  try { return JSON.parse(raw || "{}"); } catch { return {}; }
+}
+
+/* -------------------- UI helpers -------------------- */
+
+function consentKeyboard() {
+  return JSON.stringify({
+    inline_keyboard: [[
+      { text:"✅ Согласен на связь", callback_data:"consent_yes" },
+      { text:"❌ Не сейчас",        callback_data:"consent_no"  }
+    ]]
+  });
+}
+
+async function sendWelcome(chat, uid) {
+  console.log("sendWelcome", { uid, chat });
   await tg("sendMessage", {
     chat_id: chat,
     text: "Привет! Это быстрый отбор «стратегических партнёров» (SQL + Graph + Vector).\nСобираем только рабочие ответы: интересы, стек, стиль, время. Ок?",
     parse_mode: "HTML",
-    reply_markup: consentKb()
+    reply_markup: consentKeyboard(),
   });
 }
-async function sendNamePrompt(chat, uid, username){
-  if (!(await renderOnce(uid,"name"))) return;
+
+async function sendNamePrompt(chat, uid, username) {
+  console.log("sendNamePrompt", { uid, chat, username });
   const btn = username ? { text:`Использовать @${username}`, callback_data:"name_use_username" } : null;
-  const rm = btn ? { inline_keyboard: [[btn]] } : undefined;
+  const rm  = btn ? JSON.stringify({ inline_keyboard: [[btn]] }) : undefined;
   await tg("sendMessage", {
     chat_id: chat,
     text: "2) Как к тебе обращаться? Введи имя текстом" + (username?` или нажми «Использовать @${username}».`:""),
     parse_mode: "HTML",
-    reply_markup: rm ? JSON.stringify(rm) : undefined
+    reply_markup: rm,
   });
 }
 
-/* ---------- HTTP entry ---------- */
-export default async function handler(req, res){
+/* -------------------- HTTP entry (Vercel) -------------------- */
+
+export default async function handler(req, res) {
   if (req.method !== "POST") { res.status(200).send("OK"); return; }
   const upd = await readBody(req);
+
   try { console.log("HOOK:", JSON.stringify({ id: upd.update_id, msg: !!upd.message, cb: !!upd.callback_query })); } catch {}
+
   try {
-    if (upd.update_id && !(await seenUpdate(upd.update_id))) { res.status(200).send("OK"); return; }
+    // Анти-дубли по update_id (если Redis жив)
+    if (upd.update_id && !(await seenUpdate(upd.update_id))) {
+      res.status(200).send("OK"); return;
+    }
+
     if (upd.message)             await onMessage(upd.message);
     else if (upd.callback_query) await onCallback(upd.callback_query);
-  } catch(e){ console.error("ERR:", e?.stack || e?.message || String(e)); }
+  } catch (e) {
+    console.error("handler error:", e?.stack || e?.message || String(e));
+  }
+
   res.status(200).send("OK");
 }
 
-/* ---------- Handlers ---------- */
-async function onMessage(m){
+/* -------------------- Handlers -------------------- */
+
+async function onMessage(m) {
   const uid  = m.from.id;
   if (await overRL(uid)) return;
 
@@ -103,12 +182,11 @@ async function onMessage(m){
   }
 
   if (text.startsWith("/start")) {
-    // РАНЬШЕ: требовали обязательный payload `INVITE`.
-    // СЕЙЧАС: если payload есть и он НЕ содержит секрет — отклоняем.
-    // Если payload пустой — ПРОПУСКАЕМ (временно, чтобы не стопориться).
+    // deep-link: по умолчанию НЕ требуем секрет, чтобы не стопориться
     const payload = text.split(" ").slice(1).join(" ").trim();
-    if (payload && START_SECRET && !payload.includes(START_SECRET) && String(uid) !== String(ADMIN_ID)) {
-      await tg("sendMessage", { chat_id: chat, text: "Неверный ключ доступа. Попроси свежую ссылку у администратора." });
+    const hasSecret = payload && START_SECRET && payload.includes(START_SECRET);
+    if (REQUIRE_SEC && !hasSecret && String(uid) !== String(ADMIN_ID)) {
+      await tg("sendMessage", { chat_id: chat, text: `Нужен ключ доступа. Открой ссылку:\nhttps://t.me/rgnr_assistant_bot?start=${encodeURIComponent(START_SECRET || "INVITE")}` });
       return;
     }
 
@@ -121,11 +199,11 @@ async function onMessage(m){
 
     await delSess(uid);
     await putSess(uid, { step: "consent", consent: "", name: "" });
-    await sendWelcome(chat, uid);  // Экран «Согласен на связь»
+    await sendWelcome(chat, uid);     // экран с «✅/❌»
     return;
   }
 
-  // Текст принимаем только на шаге name
+  // Текст принимаем только на шаге "name"
   const s = await getSess(uid);
   if (s.step === "name") {
     s.name = text.slice(0, 80);
@@ -138,32 +216,43 @@ async function onMessage(m){
   await tg("sendMessage", { chat_id: chat, text: NO_CHAT });
 }
 
+async function onCallback(q) {
+  const uid  = q.from.id;
+  if (await overRL(uid)) return;
 
-async function onCallback(q){
-  const uid = q.from.id; if (await overRL(uid)) return;
-  const chat = q.message.chat.id; const mid = q.message.message_id;
-  const data = q.data || ""; await tg("answerCallbackQuery", { callback_query_id: q.id });
+  const chat = q.message.chat.id;
+  const mid  = q.message.message_id;
+  const data = q.data || "";
+
+  try { await tg("answerCallbackQuery", { callback_query_id: q.id }); } catch {}
 
   let s = await getSess(uid);
 
-  if (data === "consent_yes"){
-    if (s.step !== "consent") return;             // идемпотентность шага
-    s.consent = "yes"; s.step = "name"; await putSess(uid, s);
-    await tg("editMessageText", { chat_id: chat, message_id: mid, text: "✅ Спасибо за согласие на связь.", parse_mode:"HTML" });
+  if (data === "consent_yes") {
+    if (s.step !== "consent") return;    // идемпотентность шага
+    s.consent = "yes";
+    s.step    = "name";
+    await putSess(uid, s);
+    await tg("editMessageText", { chat_id: chat, message_id: mid, text: "✅ Спасибо за согласие на связь.", parse_mode: "HTML" });
     await sendNamePrompt(chat, uid, q.from.username);
     return;
   }
-  if (data === "consent_no"){
+
+  if (data === "consent_no") {
     if (s.step !== "consent") return;
     await tg("editMessageText", { chat_id: chat, message_id: mid, text: "Ок. Если передумаешь — /start" });
-    await delSess(uid); return;
+    await delSess(uid);
+    return;
   }
 
-  if (data === "name_use_username"){
+  if (data === "name_use_username") {
     if (s.step !== "name") return;
     s.name = q.from.username ? `@${q.from.username}` : String(uid);
-    s.step = "hold"; await putSess(uid, s);
+    s.step = "hold";
+    await putSess(uid, s);
     await tg("sendMessage", { chat_id: chat, text: `✅ Ок, ${s.name}. Следующий шаг добавим далее.` });
     return;
   }
+
+  // остальное игнорируем — бот не чатится
 }
