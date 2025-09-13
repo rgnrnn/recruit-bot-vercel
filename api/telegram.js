@@ -20,17 +20,44 @@ const NO_CHAT = "Я не веду переписку — используй кн
 
 const AGE_OPTIONS = ["18–20","21–23","24–26","27–29","30–33","34–37","более 38"];
 // Шаг 4: пары кнопок (2 колонки)
-const INTEREST_PAIRS = [
-  ["Backend (f.ex: Python/FastAPI/Postgres)", "Frontend (f.ex: React/TS)"],
-  ["Graph", "Vector"],
-  ["Data/ETL (DWH/BI)", "DevOps/MLOps"],
-  ["Product/Coordination", "Integrations & API (ERP/1C/CRM)"],
-  ["RAG / Retrieval Systems", "Agents / Orchestration (LangGraph)"],
-  ["Knowledge Graphs / Онтологии", "DB & Perf (Postgres/pgvector)"],
-  ["Security & Access", "Observability (logs/metrics/tracing)"],
-  ["Testing/QA Automation", "UX/UI & Design Systems"],
-  ["Cloud (AWS/GCP)", "Distributed Systems (CQRS/Event Sourcing)"],
+// Шаг 4: элементы с ID (чтобы callback_data были короткими и без двоеточий внутри текста)
+const INTEREST_ITEMS = [
+  { id: "i_backend",  label: "Backend (f.ex: Python/FastAPI/Postgres)" },
+  { id: "i_frontend", label: "Frontend (f.ex: React/TS)" },
+  { id: "i_graph",    label: "Graph" },
+  { id: "i_vector",   label: "Vector" },
+  { id: "i_data_etl", label: "Data/ETL (DWH/BI)" },
+  { id: "i_devops",   label: "DevOps/MLOps" },
+  { id: "i_product",  label: "Product/Coordination" },
+  { id: "i_integr",   label: "Integrations & API (ERP/1C/CRM)" },
+  { id: "i_rag",      label: "RAG / Retrieval Systems" },
+  { id: "i_agents",   label: "Agents / Orchestration (LangGraph)" },
+  { id: "i_kg",       label: "Knowledge Graphs / Онтологии" },
+  { id: "i_db_perf",  label: "DB & Perf (Postgres/pgvector)" },
+  { id: "i_sec",      label: "Security & Access" },
+  { id: "i_observ",   label: "Observability (logs/metrics/tracing)" },
+  { id: "i_testing",  label: "Testing/QA Automation" },
+  { id: "i_ux_ui",    label: "UX/UI & Design Systems" },
+  { id: "i_cloud",    label: "Cloud (AWS/GCP)" },
+  { id: "i_dist",     label: "Distributed Systems (CQRS/Event Sourcing)" },
 ];
+
+// Пары для двух колонок (только ID)
+const INTEREST_PAIRS = [
+  ["i_backend", "i_frontend"],
+  ["i_graph", "i_vector"],
+  ["i_data_etl", "i_devops"],
+  ["i_product", "i_integr"],
+  ["i_rag", "i_agents"],
+  ["i_kg", "i_db_perf"],
+  ["i_sec", "i_observ"],
+  ["i_testing", "i_ux_ui"],
+  ["i_cloud", "i_dist"],
+];
+
+// Быстрые мапы
+const LABEL_BY_ID = Object.fromEntries(INTEREST_ITEMS.map(x => [x.id, x.label]));
+
 
 
 
@@ -138,18 +165,22 @@ const kbName = () => ({
 
 const kbSingle = (prefix, opts)=>({ inline_keyboard: opts.map(o=>[{text:o,callback_data:`${prefix}:${o}`}]).concat([[{text:"🔁 Начать заново",callback_data:"reset_start"}]]) });
 
-function kbInterests(selected) {
+function kbInterests(selectedLabels) {
   const rows = [];
-  for (const [left, right] of INTEREST_PAIRS) {
+  for (const [leftId, rightId] of INTEREST_PAIRS) {
+    const leftLabel  = LABEL_BY_ID[leftId];
+    const rightLabel = LABEL_BY_ID[rightId];
     rows.push([
-      { text: `${selected.includes(left) ? "☑️" : "⬜️"} ${left}`,  callback_data: `q3:${left}`  },
-      { text: `${selected.includes(right)? "☑️" : "⬜️"} ${right}`, callback_data: `q3:${right}` },
+      { text: `${selectedLabels.includes(leftLabel)  ? "☑️" : "⬜️"} ${leftLabel}`,  callback_data: `q3id:${leftId}`  },
+      { text: `${selectedLabels.includes(rightLabel) ? "☑️" : "⬜️"} ${rightLabel}`, callback_data: `q3id:${rightId}` },
     ]);
   }
-  // Широкая заметная "зелёная" кнопка (цвет через эмодзи)
   rows.push([{ text: "🟢 ДАЛЬШЕ ➜", callback_data: "q3:next" }]);
+  rows.push([{ text: "🔁 Начать заново", callback_data: "reset_start" }]); // вернули reset
   return { inline_keyboard: rows };
 }
+
+
 
 
 
@@ -422,6 +453,42 @@ async function onCallback(q){
     return;
   }
 
+
+
+
+// Тоггл интереса по ID
+if (data.startsWith("q3id:")) {
+  if (s.step !== "interests") return;
+  const id = data.substring(5);                // после 'q3id:'
+  const label = LABEL_BY_ID[id];
+  if (!label) return;
+  toggle(s.interests, label);                  // работаем с label, как и раньше
+  await putSess(uid, s);
+  await tg("editMessageReplyMarkup", {
+    chat_id: chat, message_id: mid, reply_markup: kbInterests(s.interests)
+  });
+  return;
+}
+
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+
+
+
+  // Старая ветка обработки только ДАЛЬШЕ
   if (data.startsWith("q3:")){
     if (s.step!=="interests") return;
     const opt = data.split(":")[1];
@@ -432,6 +499,13 @@ async function onCallback(q){
   }
 
 
+
+
+
+
+
+
+  
   if (data.startsWith("q4:")){
     if (s.step!=="stack") return;
     const opt=data.split(":")[1];
