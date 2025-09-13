@@ -93,16 +93,18 @@ const CONSENT_TEXT = `Старт в команде со-основателей: 
 const kbConsent = () => ({
   inline_keyboard: [
     [
-      { text: "✅ Согласен на связь", callback_data: "consent_yes" },
+      { text: "✅ Согласен", callback_data: "consent_yes" },
       { text: "❌ Не сейчас",        callback_data: "consent_no"  }
     ]
   ]
 });
 const kbContinueReset = () => ({ inline_keyboard:[[ {text:"▶️ Продолжить",callback_data:"continue"}, {text:"🔁 Начать заново",callback_data:"reset_start"} ]]});
-const kbName = (username)=>({ inline_keyboard:[
-  ...(username? [[{text:`Использовать @${username}`,callback_data:"name_use_username"}]]: []),
-  [{text:"🔁 Начать заново",callback_data:"reset_start"}]
-]});
+const kbName = () => ({
+  inline_keyboard: [
+    [{ text: "🔁 Начать заново", callback_data: "reset_start" }]
+  ]
+});
+
 const kbSingle = (prefix, opts)=>({ inline_keyboard: opts.map(o=>[{text:o,callback_data:`${prefix}:${o}`}]).concat([[{text:"🔁 Начать заново",callback_data:"reset_start"}]]) });
 function kbMulti(prefix,options,selected){
   const rows = options.map(o=>[{text:`${selected.includes(o)?"☑️":"⬜️"} ${o}`,callback_data:`${prefix}:${o}`}]);
@@ -129,7 +131,15 @@ async function sendWelcome(chat, uid) {
     reply_markup: kbConsent()
   });
 }
-async function sendName(chat,uid,username){ await tg("sendMessage",{chat_id:chat,text:`2) Как к тебе обращаться? Введи имя текстом${username?` или нажми «Использовать @${username}».`:""}`,parse_mode:"HTML",reply_markup:kbName(username)}); }
+async function sendName(chat, uid) {
+  await tg("sendMessage", {
+    chat_id: chat,
+    text: "2) Как к тебе обращаться? Введи имя текстом.",
+    parse_mode: "HTML",
+    reply_markup: kbName()
+  });
+}
+
 async function sendInterests(chat,uid,s){ await tg("sendMessage",{chat_id:chat,text:"3) Что интереснее 3–6 мес.? (мультивыбор, повторное нажатие снимает)",parse_mode:"HTML",reply_markup:kbMulti("q3",A_INTERESTS,s.interests||[])}); }
 async function sendStack(chat,uid,s){ await tg("sendMessage",{chat_id:chat,text:"4) Уверенный стек (мультивыбор):",parse_mode:"HTML",reply_markup:kbMulti("q4",A_STACK,s.stack||[])}); }
 async function sendA1(chat){ await tg("sendMessage",{chat_id:chat,text:"5/A1) Что ближе по стилю?",reply_markup:kbSingle("a1",A1)}); }
