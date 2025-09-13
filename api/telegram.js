@@ -18,6 +18,9 @@ const OPENAI_MODEL   = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
 const NO_CHAT = "Я не веду переписку — используй кнопки ниже";
 
+const AGE_OPTIONS = ["18–20","21–23","24–26","27–29","30–33","34–37","более 38"];
+
+
 const A_INTERESTS = ["Backend","Graph/Neo4j","Vector/LLM","Frontend","DevOps/MLOps","Data/ETL","Product/Coordination"];
 const A_STACK     = ["Python/FastAPI","PostgreSQL/SQL","Neo4j","pgvector","LangChain/LangGraph","React/TS","Docker/K8s/Linux","CI/GitHub"];
 const A1 = ["Быстро прототипирую","Проектирую основательно","Исследую гипотезы","Синхронизирую людей"];
@@ -36,11 +39,20 @@ const rIncr=async(k,ex=60)=>{ const j=await rGET(`/incr/${encodeURIComponent(k)}
 async function seenUpdate(id){ try{ const j=await rSet(`upd:${id}`,"1",{EX:180,NX:true}); return j&&("result"in j)? j.result==="OK" : true; }catch{return true;} }
 async function overRL(uid,limit=12){ try{return (await rIncr(`rl:${uid}`,60))>limit;}catch{return false;} }
 
+
 function newRun(){
-  return { run_id:`${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`, started_at:new Date().toISOString(),
-    step:"consent", consent:"", name:"", interests:[], stack:[], a1:"", a2:"", a3:"",
-    about:"", time_zone:"", time_windows:[], specific_slots_text:"", llm:{} };
+  return {
+    run_id:`${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`,
+    started_at:new Date().toISOString(),
+    step:"consent", consent:"", name:"",
+    age:"",                    // <— добавили возраст
+    interests:[], stack:[], a1:"", a2:"", a3:"",
+    about:"", time_zone:"", time_windows:[], specific_slots_text:"",
+    llm:{}
+  };
 }
+
+
 async function getSess(uid){
   try{ const j=await rGet(`sess:${uid}`); if(!j?.result) return newRun();
     let s; try{s=JSON.parse(j.result);}catch{return newRun();}
@@ -98,6 +110,11 @@ const kbConsent = () => ({
     ]
   ]
 });
+
+
+
+
+
 const kbContinueReset = () => ({ inline_keyboard:[[ {text:"▶️ Продолжить",callback_data:"continue"}, {text:"🔁 Начать заново",callback_data:"reset_start"} ]]});
 const kbName = () => ({
   inline_keyboard: [
@@ -137,6 +154,16 @@ async function sendName(chat, uid) {
     text: "2) Как к тебе обращаться? Введи имя текстом.",
     parse_mode: "HTML",
     reply_markup: kbName()
+  });
+}
+
+
+async function sendAge(chat, uid, s) {
+  await tg("sendMessage", {
+    chat_id: chat,
+    text: "3) Укажи возраст:",
+    parse_mode: "HTML",
+    reply_markup: kbSingle("age", AGE_OPTIONS) // одиночный выбор
   });
 }
 
@@ -269,6 +296,7 @@ async function resetFlow(uid,chat){
 }
 async function continueFlow(uid,chat,s,username){
   if (s.step==="name")        { await sendName(chat,uid,username); return; }
+  if (s.step === "age")       { await sendAge(chat, uid, s); return; }
   if (s.step==="interests")   { await sendInterests(chat,uid,s);   return; }
   if (s.step==="stack")       { await sendStack(chat,uid,s);       return; }
   if (s.step==="a1")          { await sendA1(chat);                return; }
@@ -304,7 +332,13 @@ async function onMessage(m){
   }
 
   const s=await getSess(uid);
-  if (s.step==="name"){ s.name=text.slice(0,80); s.step="interests"; await putSess(uid,s); await sendInterests(chat,uid,s); return; }
+  if (s.step==="name"){
+    s.name = text.slice(0,80);
+    s.step = "age";
+    await putSess(uid, s);
+    await sendAge(chat, uid, s);
+    return;
+  }
   if (s.step==="about"){ s.about=text.slice(0,1200); s.step="time"; await putSess(uid,s); await sendTime(chat,s); return; }
   if (s.step==="time" && s.time_zone && s.time_windows.length){ s.specific_slots_text=text.slice(0,300); await putSess(uid,s); await finalize(chat,m.from,s); return; }
 
@@ -326,6 +360,15 @@ async function onCallback(q){
   if (data==="consent_no"){ if(s.step!=="consent") return; try{ await tg("editMessageText",{chat_id:chat,message_id:mid,text:"Ок. Если передумаешь — /start"}); }catch{} await delSess(uid); return; }
 
   if (data==="name_use_username"){ if(s.step!=="name") return; s.name=q.from.username?`@${q.from.username}`:String(uid); s.step="interests"; await putSess(uid,s); await sendInterests(chat,uid,s); return; }
+
+  if (data.startsWith("age:")) {
+    if (s.step !== "age") return;
+    s.age = data.split(":")[1];
+    s.step = "interests";              // дальше идём по прежнему сценарию
+    await putSess(uid, s);
+    await sendInterests(chat, uid, s);
+    return;
+  }
 
   if (data.startsWith("q3:")){
     if (s.step!=="interests") return;
