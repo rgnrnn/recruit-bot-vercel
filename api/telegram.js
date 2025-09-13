@@ -113,7 +113,14 @@ function kbTime(sess){
 }
 
 /* ---------------- Screens ---------------- */
-async function sendWelcome(chat,uid){ await tg("sendMessage",{chat_id:chat,text:"Привет! Это быстрый отбор «стратегических партнёров» (SQL + Graph + Vector).\nСобираем только рабочие ответы: интересы, стек, стиль, время. Ок?",parse_mode:"HTML",reply_markup:kbConsent()}); }
+async function sendWelcome(chat, uid) {
+  await tg("sendMessage", {
+    chat_id: chat,
+    text: CONSENT_TEXT,
+    parse_mode: "HTML",
+    reply_markup: kbConsent()
+  });
+}
 async function sendName(chat,uid,username){ await tg("sendMessage",{chat_id:chat,text:`2) Как к тебе обращаться? Введи имя текстом${username?` или нажми «Использовать @${username}».`:""}`,parse_mode:"HTML",reply_markup:kbName(username)}); }
 async function sendInterests(chat,uid,s){ await tg("sendMessage",{chat_id:chat,text:"3) Что интереснее 3–6 мес.? (мультивыбор, повторное нажатие снимает)",parse_mode:"HTML",reply_markup:kbMulti("q3",A_INTERESTS,s.interests||[])}); }
 async function sendStack(chat,uid,s){ await tg("sendMessage",{chat_id:chat,text:"4) Уверенный стек (мультивыбор):",parse_mode:"HTML",reply_markup:kbMulti("q4",A_STACK,s.stack||[])}); }
@@ -211,7 +218,7 @@ async function finalize(chat, user, s){
     JSON.stringify(llm.links || []),
     llm.summary || ""
   ];
-  await appendSheets(row);
+
   const wr = await appendSheets(row);
   console.log("sheets_append_result:", wr);
 
