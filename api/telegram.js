@@ -19,6 +19,19 @@ const OPENAI_MODEL   = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const NO_CHAT = "Я не веду переписку — используй кнопки ниже";
 
 const AGE_OPTIONS = ["18–20","21–23","24–26","27–29","30–33","34–37","более 38"];
+// Шаг 4: пары кнопок (2 колонки)
+const INTEREST_PAIRS = [
+  ["Backend (f.ex: Python/FastAPI/Postgres)", "Frontend (f.ex: React/TS)"],
+  ["Graph", "Vector"],
+  ["Data/ETL (DWH/BI)", "DevOps/MLOps"],
+  ["Product/Coordination", "Integrations & API (ERP/1C/CRM)"],
+  ["RAG / Retrieval Systems", "Agents / Orchestration (LangGraph)"],
+  ["Knowledge Graphs / Онтологии", "DB & Perf (Postgres/pgvector)"],
+  ["Security & Access", "Observability (logs/metrics/tracing)"],
+  ["Testing/QA Automation", "UX/UI & Design Systems"],
+  ["Cloud (AWS/GCP)", "Distributed Systems (CQRS/Event Sourcing)"],
+];
+
 
 
 const A_INTERESTS = ["Backend","Graph/Neo4j","Vector/LLM","Frontend","DevOps/MLOps","Data/ETL","Product/Coordination"];
@@ -46,7 +59,8 @@ function newRun(){
     started_at:new Date().toISOString(),
     step:"consent", consent:"", name:"",
     age:"",                    // <— добавили возраст
-    interests:[], stack:[], a1:"", a2:"", a3:"",
+    other_interests: [],   // текстовые ответы пользователя на шаге 4
+    stack:[], a1:"", a2:"", a3:"",
     about:"", time_zone:"", time_windows:[], specific_slots_text:"",
     llm:{}
   };
@@ -123,6 +137,22 @@ const kbName = () => ({
 });
 
 const kbSingle = (prefix, opts)=>({ inline_keyboard: opts.map(o=>[{text:o,callback_data:`${prefix}:${o}`}]).concat([[{text:"🔁 Начать заново",callback_data:"reset_start"}]]) });
+
+function kbInterests(selected) {
+  const rows = [];
+  for (const [left, right] of INTEREST_PAIRS) {
+    rows.push([
+      { text: `${selected.includes(left) ? "☑️" : "⬜️"} ${left}`,  callback_data: `q3:${left}`  },
+      { text: `${selected.includes(right)? "☑️" : "⬜️"} ${right}`, callback_data: `q3:${right}` },
+    ]);
+  }
+  // Широкая заметная "зелёная" кнопка (цвет через эмодзи)
+  rows.push([{ text: "🟢 ДАЛЬШЕ ➜", callback_data: "q3:next" }]);
+  return { inline_keyboard: rows };
+}
+
+
+
 function kbMulti(prefix,options,selected){
   const rows = options.map(o=>[{text:`${selected.includes(o)?"☑️":"⬜️"} ${o}`,callback_data:`${prefix}:${o}`}]);
   rows.push([{text:"Дальше ➜",callback_data:`${prefix}:next`}]);
@@ -167,7 +197,17 @@ async function sendAge(chat, uid, s) {
   });
 }
 
-async function sendInterests(chat,uid,s){ await tg("sendMessage",{chat_id:chat,text:"3) Что интереснее 3–6 мес.? (мультивыбор, повторное нажатие снимает)",parse_mode:"HTML",reply_markup:kbMulti("q3",A_INTERESTS,s.interests||[])}); }
+async function sendInterests(chat, uid, s) {
+  await tg("sendMessage", {
+    chat_id: chat,
+    text: "4) Что реально драйвит в последние 12 месяцев?\nОтметь 2–5 направлений (чекбоксы). Можно дополнить своим вариантом обычным сообщением.",
+    parse_mode: "HTML",
+    reply_markup: kbInterests(s.interests || [])
+  });
+}
+
+
+
 async function sendStack(chat,uid,s){ await tg("sendMessage",{chat_id:chat,text:"4) Уверенный стек (мультивыбор):",parse_mode:"HTML",reply_markup:kbMulti("q4",A_STACK,s.stack||[])}); }
 async function sendA1(chat){ await tg("sendMessage",{chat_id:chat,text:"5/A1) Что ближе по стилю?",reply_markup:kbSingle("a1",A1)}); }
 async function sendA2(chat){ await tg("sendMessage",{chat_id:chat,text:"5/A2) Что важнее?",reply_markup:kbSingle("a2",A2)}); }
@@ -342,6 +382,18 @@ async function onMessage(m){
   if (s.step==="about"){ s.about=text.slice(0,1200); s.step="time"; await putSess(uid,s); await sendTime(chat,s); return; }
   if (s.step==="time" && s.time_zone && s.time_windows.length){ s.specific_slots_text=text.slice(0,300); await putSess(uid,s); await finalize(chat,m.from,s); return; }
 
+  // На шаге "interests" любое некомандное сообщение — это свой вариант
+  if (s.step === "interests" && text && !text.startsWith("/")) {
+    s.other_interests = s.other_interests || [];
+    if (s.other_interests.length < 5) s.other_interests.push(text.slice(0, 120));
+    await putSess(uid, s);
+    await tg("sendMessage", { chat_id: chat, text: "Добавил в список. Можешь отметить чекбоксы и/или нажать «ДАЛЬШЕ ➜»." });
+    return;
+  }
+
+
+
+  
   await tg("sendMessage",{chat_id:chat,text:NO_CHAT,reply_markup:kbContinueReset()});
 }
 
@@ -372,11 +424,13 @@ async function onCallback(q){
 
   if (data.startsWith("q3:")){
     if (s.step!=="interests") return;
-    const opt=data.split(":")[1];
+    const opt = data.split(":")[1];
     if (opt==="next"){ s.step="stack"; await putSess(uid,s); await sendStack(chat,uid,s); return; }
     toggle(s.interests,opt); await putSess(uid,s);
-    await tg("editMessageReplyMarkup",{chat_id:chat,message_id:mid,reply_markup:kbMulti("q3",A_INTERESTS,s.interests)}); return;
+    await tg("editMessageReplyMarkup",{ chat_id:chat, message_id:mid, reply_markup: kbInterests(s.interests) });
+    return;
   }
+
 
   if (data.startsWith("q4:")){
     if (s.step!=="stack") return;
