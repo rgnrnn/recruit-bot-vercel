@@ -16,7 +16,7 @@ const SHEETS_SECRET= process.env.SHEETS_WEBHOOK_SECRET || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL   = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-const NO_CHAT = "Я не веду переписку — используй кнопки ниже 🙌";
+const NO_CHAT = "Я не веду переписку — используй кнопки ниже";
 
 const A_INTERESTS = ["Backend","Graph/Neo4j","Vector/LLM","Frontend","DevOps/MLOps","Data/ETL","Product/Coordination"];
 const A_STACK     = ["Python/FastAPI","PostgreSQL/SQL","Neo4j","pgvector","LangChain/LangGraph","React/TS","Docker/K8s/Linux","CI/GitHub"];
@@ -72,11 +72,24 @@ async function readBody(req){
   try{ return JSON.parse(raw||"{}"); }catch{ return {}; }
 }
 
+// -------- Welcome copy --------
+const CONSENT_TEXT =
+  "Старт в команде со-основателей: партнерская доля, право голоса в архитектуре и темп, соответствующий уровню задач. Ядро продукта формируется сейчас — редкий шанс зайти в проект, 
+  который сшивает три мира. Промышленный «операционный интеллект» меняет правила в работе с данными: от хаоса файлов и чатов — к системе, где решения рождаются за секунды, а не за недели. 
+  Итог — платформа, которая ускоряет решения на порядки и может переобучать сам бизнес действовать умнее. Формат потенциального взаимодействия - доля и партнёрство: больше влияния, больше ответственности, быстрее рост.";
+
+
+
+
 /* ---------------- Keyboards ---------------- */
-const kbConsent = () => ({ inline_keyboard:[
-  [{text:"✅ Согласен на связь",callback_data:"consent_yes"},{text:"❌ Не сейчас",callback_data:"consent_no"}],
-  [{text:"🔁 Начать заново",callback_data:"reset_start"}]
-]});
+const kbConsent = () => ({
+  inline_keyboard: [
+    [
+      { text: "✅ Согласен на связь", callback_data: "consent_yes" },
+      { text: "❌ Не сейчас",        callback_data: "consent_no"  }
+    ]
+  ]
+});
 const kbContinueReset = () => ({ inline_keyboard:[[ {text:"▶️ Продолжить",callback_data:"continue"}, {text:"🔁 Начать заново",callback_data:"reset_start"} ]]});
 const kbName = (username)=>({ inline_keyboard:[
   ...(username? [[{text:`Использовать @${username}`,callback_data:"name_use_username"}]]: []),
