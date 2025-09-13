@@ -199,6 +199,9 @@ async function finalize(chat, user, s){
     llm.summary || ""
   ];
   await appendSheets(row);
+  const wr = await appendSheets(row);
+  console.log("sheets_append_result:", wr);
+
   if (ADMIN_ID) {
     const digest = `${llm.fit_score ?? "?"} — ${(llm.name || s.name || username)} — ${(llm.roles||[]).slice(0,2).join(",")}`;
     await tg("sendMessage",{chat_id:ADMIN_ID,text:`Новая анкета: ${digest}`});
