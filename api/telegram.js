@@ -55,6 +55,50 @@ const INTEREST_PAIRS = [
   ["i_cloud", "i_dist"],
 ];
 
+// Шаг 5: уверенный production-стек
+const STACK_ITEMS = [
+  { id: "s_py_fastapi",    label: "Python/FastAPI" },
+  { id: "s_postgres",      label: "PostgreSQL/SQL" },
+  { id: "s_neo4j",         label: "Neo4j" },
+  { id: "s_pgvector",      label: "pgvector" },
+  { id: "s_langchain",     label: "LangChain/LangGraph" },
+  { id: "s_llm_apis",      label: "LLM APIs (OpenAI/Claude/etc.)" },
+  { id: "s_react_ts",      label: "React/TypeScript" },
+  { id: "s_node_nest",     label: "Node.js/NestJS" },
+  { id: "s_docker_k8s_lin",label: "Docker/Kubernetes/Linux" },
+  { id: "s_ci_cd",         label: "CI/CD (GitHub Actions/GitLab)" },
+  { id: "s_kafka",         label: "Kafka/Redpanda" },
+  { id: "s_redis_rabbit",  label: "Redis/RabbitMQ" },
+  { id: "s_airflow_dbt",   label: "Airflow/dbt" },
+  { id: "s_terraform",     label: "Terraform/Ansible" },
+  { id: "s_nginx_traefik", label: "Nginx/Traefik" },
+  { id: "s_observability", label: "Observability (Prometheus/Grafana/OTel)" },
+  { id: "s_testing",       label: "Testing (pytest/Playwright)" },
+  { id: "s_security",      label: "Security (SSO/RBAC/Secrets)" },
+  { id: "s_cloud",         label: "Cloud (AWS/GCP)" },
+  { id: "s_distributed",   label: "Distributed Systems (CQRS/Event Sourcing)" },
+];
+// пары (2 колонки)
+const STACK_PAIRS = [
+  ["s_py_fastapi","s_postgres"],
+  ["s_neo4j","s_pgvector"],
+  ["s_langchain","s_llm_apis"],
+  ["s_react_ts","s_node_nest"],
+  ["s_docker_k8s_lin","s_ci_cd"],
+  ["s_kafka","s_redis_rabbit"],
+  ["s_airflow_dbt","s_terraform"],
+  ["s_nginx_traefik","s_observability"],
+  ["s_testing","s_security"],
+  ["s_cloud","s_distributed"],
+];
+const STACK_LABEL_BY_ID = Object.fromEntries(STACK_ITEMS.map(x => [x.id, x.label]));
+
+
+
+
+
+
+
 // Быстрые мапы
 const LABEL_BY_ID = Object.fromEntries(INTEREST_ITEMS.map(x => [x.id, x.label]));
 
@@ -85,13 +129,17 @@ function newRun(){
     run_id:`${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`,
     started_at:new Date().toISOString(),
     step:"consent", consent:"", name:"",
-    age:"",                    // <— добавили возраст
-    other_interests: [],   // текстовые ответы пользователя на шаге 4
-    stack:[], a1:"", a2:"", a3:"",
+    age:"",
+    interests:[],               // <— чтобы не ловить undefined на шаге 4
+    other_interests:[],
+    stack:[],
+    other_stack:[],             // <— сюда пишем «свой инструмент»
+    a1:"", a2:"", a3:"",
     about:"", time_zone:"", time_windows:[], specific_slots_text:"",
     llm:{}
   };
 }
+
 
 
 async function getSess(uid){
@@ -181,6 +229,23 @@ function kbInterests(selectedLabels) {
 }
 
 
+function kbStack(selectedLabels) {
+  const rows = [];
+  for (const [leftId, rightId] of STACK_PAIRS) {
+    const leftLabel  = STACK_LABEL_BY_ID[leftId];
+    const rightLabel = STACK_LABEL_BY_ID[rightId];
+    rows.push([
+      { text: `${selectedLabels.includes(leftLabel)  ? "☑️" : "⬜️"} ${leftLabel}`,  callback_data: `q4id:${leftId}`  },
+      { text: `${selectedLabels.includes(rightLabel) ? "☑️" : "⬜️"} ${rightLabel}`, callback_data: `q4id:${rightId}` },
+    ]);
+  }
+  rows.push([{ text: "🟢 ДАЛЬШЕ ➜", callback_data: "q4:next" }]);
+  rows.push([{ text: "🔁 Начать заново", callback_data: "reset_start" }]);
+  return { inline_keyboard: rows };
+}
+
+
+
 
 
 
@@ -237,9 +302,15 @@ async function sendInterests(chat, uid, s) {
   });
 }
 
+async function sendStack(chat, uid, s){
+  await tg("sendMessage", {
+    chat_id: chat,
+    text: "5) Где тебе «можно доверить прод». \nОтметь 2–7 пунктов (чекбоксы). Свой инструмент можно дописать сообщением.",
+    parse_mode: "HTML",
+    reply_markup: kbStack(s.stack || [])
+  });
+}
 
-
-async function sendStack(chat,uid,s){ await tg("sendMessage",{chat_id:chat,text:"4) Уверенный стек (мультивыбор):",parse_mode:"HTML",reply_markup:kbMulti("q4",A_STACK,s.stack||[])}); }
 async function sendA1(chat){ await tg("sendMessage",{chat_id:chat,text:"5/A1) Что ближе по стилю?",reply_markup:kbSingle("a1",A1)}); }
 async function sendA2(chat){ await tg("sendMessage",{chat_id:chat,text:"5/A2) Что важнее?",reply_markup:kbSingle("a2",A2)}); }
 async function sendA3(chat){ await tg("sendMessage",{chat_id:chat,text:"5/A3) Что предпочитаешь?",reply_markup:kbSingle("a3",A3)}); }
@@ -366,7 +437,7 @@ async function resetFlow(uid,chat){
   await sendWelcome(chat,uid);
 }
 async function continueFlow(uid,chat,s,username){
-  if (s.step==="name")        { await sendName(chat,uid,username); return; }
+  if (s.step==="name")        { await sendName(chat,uid); return; }
   if (s.step === "age")       { await sendAge(chat, uid, s); return; }
   if (s.step==="interests")   { await sendInterests(chat,uid,s);   return; }
   if (s.step==="stack")       { await sendStack(chat,uid,s);       return; }
@@ -422,114 +493,158 @@ async function onMessage(m){
     return;
   }
 
-
-
-  
-  await tg("sendMessage",{chat_id:chat,text:NO_CHAT,reply_markup:kbContinueReset()});
-}
-
-async function onCallback(q){
-  const uid=q.from.id; if(await overRL(uid)) return;
-  const chat=q.message.chat.id; const mid=q.message.message_id; const data=q.data||"";
-  try{ await tg("answerCallbackQuery",{callback_query_id:q.id}); }catch{}
-  let s=await getSess(uid);
-
-  if (data==="continue"){ await continueFlow(uid,chat,s,q.from.username); return; }
-  if (data==="reset_start"){ await resetFlow(uid,chat); return; }
-
-  if (data==="consent_yes"){ if(s.step!=="consent") return; s.consent="yes"; s.step="name"; await putSess(uid,s);
-    try{ await tg("editMessageText",{chat_id:chat,message_id:mid,text:"✅ Спасибо за согласие на связь.",parse_mode:"HTML"}); }catch{}
-    await sendName(chat,uid,q.from.username); return; }
-  if (data==="consent_no"){ if(s.step!=="consent") return; try{ await tg("editMessageText",{chat_id:chat,message_id:mid,text:"Ок. Если передумаешь — /start"}); }catch{} await delSess(uid); return; }
-
-  if (data==="name_use_username"){ if(s.step!=="name") return; s.name=q.from.username?`@${q.from.username}`:String(uid); s.step="interests"; await putSess(uid,s); await sendInterests(chat,uid,s); return; }
-
-  if (data.startsWith("age:")) {
-    if (s.step !== "age") return;
-    s.age = data.split(":")[1];
-    s.step = "interests";              // дальше идём по прежнему сценарию
-    await putSess(uid, s);
-    await sendInterests(chat, uid, s);
-    return;
-  }
-
-
-
-
-// Тоггл интереса по ID
-if (data.startsWith("q3id:")) {
-  if (s.step !== "interests") return;
-  const id = data.substring(5);                // после 'q3id:'
-  const label = LABEL_BY_ID[id];
-  if (!label) return;
-  toggle(s.interests, label);                  // работаем с label, как и раньше
+// Шаг 5: свой инструмент текстом
+if (s.step === "stack" && text && !text.startsWith("/")) {
+  s.other_stack = s.other_stack || [];
+  if (s.other_stack.length < 5) s.other_stack.push(text.slice(0, 120));
   await putSess(uid, s);
-  await tg("editMessageReplyMarkup", {
-    chat_id: chat, message_id: mid, reply_markup: kbInterests(s.interests)
-  });
+  await tg("sendMessage", { chat_id: chat, text: "Добавил в стек. Отметь чекбоксы и/или жми «ДАЛЬШЕ ➜»." });
   return;
 }
 
 
 
-
-
-
-
-
   
 
+  
+  await tg("sendMessage",{chat_id:chat,text:NO_CHAT,reply_markup:kbContinueReset()});
+}
 
 
 
+async function onCallback(q) {
+  const uid  = q.from.id;
+  if (await overRL(uid)) return;
 
+  const chat = q.message.chat.id;
+  const mid  = q.message.message_id;
+  const data = q.data || "";
 
+  try { await tg("answerCallbackQuery", { callback_query_id: q.id }); } catch {}
 
+  let s = await getSess(uid);
 
+  // Навигация
+  if (data === "continue")     { await continueFlow(uid, chat, s); return; }
+  if (data === "reset_start")  { await resetFlow(uid, chat);       return; }
 
-
-  // Старая ветка обработки только ДАЛЬШЕ
-  if (data.startsWith("q3:")){
-    if (s.step!=="interests") return;
-    const opt = data.split(":")[1];
-    if (opt==="next"){ s.step="stack"; await putSess(uid,s); await sendStack(chat,uid,s); return; }
-    toggle(s.interests,opt); await putSess(uid,s);
-    await tg("editMessageReplyMarkup",{ chat_id:chat, message_id:mid, reply_markup: kbInterests(s.interests) });
+  // Согласие
+  if (data === "consent_yes") {
+    if (s.step !== "consent") return;
+    s.consent = "yes";
+    s.step    = "name";
+    await putSess(uid, s);
+    try {
+      await tg("editMessageText", { chat_id: chat, message_id: mid, text: "✅ Спасибо за согласие на связь.", parse_mode: "HTML" });
+    } catch {}
+    await sendName(chat, uid);
+    return;
+  }
+  if (data === "consent_no") {
+    if (s.step !== "consent") return;
+    try {
+      await tg("editMessageText", { chat_id: chat, message_id: mid, text: "Ок. Если передумаешь — /start" });
+    } catch {}
+    await delSess(uid);
     return;
   }
 
-
-
-
-
-
-
-
-  
-  if (data.startsWith("q4:")){
-    if (s.step!=="stack") return;
-    const opt=data.split(":")[1];
-    if (opt==="next"){ s.step="a1"; await putSess(uid,s); await sendA1(chat); return; }
-    toggle(s.stack,opt); await putSess(uid,s);
-    await tg("editMessageReplyMarkup",{chat_id:chat,message_id:mid,reply_markup:kbMulti("q4",A_STACK,s.stack)}); return;
+  // Возраст (после имени)
+  if (data.startsWith("age:")) {
+    if (s.step !== "age") return;
+    s.age  = data.split(":")[1];
+    s.step = "interests";
+    await putSess(uid, s);
+    await sendInterests(chat, uid, s);
+    return;
   }
 
-  if (data.startsWith("a1:")){ if (s.step!=="a1") return; s.a1=data.split(":")[1]; s.step="a2"; await putSess(uid,s); await sendA2(chat); return; }
-  if (data.startsWith("a2:")){ if (s.step!=="a2") return; s.a2=data.split(":")[1]; s.step="a3"; await putSess(uid,s); await sendA3(chat); return; }
-  if (data.startsWith("a3:")){ if (s.step!=="a3") return; s.a3=data.split(":")[1]; s.step="about"; await putSess(uid,s); await sendAbout(chat); return; }
+  // Шаг 4: интересы — toggl по ID
+  if (data.startsWith("q3id:")) {
+    if (s.step !== "interests") return;
+    const id    = data.slice(5);
+    const label = LABEL_BY_ID[id];
+    if (!label) return;
+    toggle(s.interests, label);
+    await putSess(uid, s);
+    await tg("editMessageReplyMarkup", {
+      chat_id: chat, message_id: mid, reply_markup: kbInterests(s.interests)
+    });
+    return;
+  }
 
-  if (data.startsWith("q7w:")){
-    if (s.step!=="time") return;
-    const opt=data.split(":")[1];
-    if (opt==="done"){
-      if (!s.time_zone || !s.time_windows.length){ await tg("sendMessage",{chat_id:chat,text:"Укажи часовой пояс и хотя бы одно окно времени."}); return; }
-      await tg("sendMessage",{chat_id:chat,text:"Опционально: напиши 2–3 конкретных слота (или «-» для пропуска)."}); return;
+  // Шаг 4: интересы — только NEXT
+  if (data.startsWith("q3:")) {
+    if (s.step !== "interests") return;
+    if (data === "q3:next") {
+      s.step = "stack";
+      await putSess(uid, s);
+      await sendStack(chat, uid, s);
     }
-    toggle(s.time_windows,opt); await putSess(uid,s);
-    await tg("editMessageReplyMarkup",{chat_id:chat,message_id:mid,reply_markup:kbTime(s)}); return;
+    return;
   }
-  if (data.startsWith("q7tz:")){ if (s.step!=="time") return; s.time_zone=data.split(":")[1]; await putSess(uid,s); await tg("editMessageReplyMarkup",{chat_id:chat,message_id:mid,reply_markup:kbTime(s)}); return; }
+
+  // Шаг 5: стек — toggl по ID
+  if (data.startsWith("q4id:")) {
+    if (s.step !== "stack") return;
+    const id    = data.slice(5);
+    const label = STACK_LABEL_BY_ID[id];
+    if (!label) return;
+    toggle(s.stack, label);
+    await putSess(uid, s);
+    await tg("editMessageReplyMarkup", {
+      chat_id: chat, message_id: mid, reply_markup: kbStack(s.stack)
+    });
+    return;
+  }
+
+  // Шаг 5: стек — только NEXT
+  if (data.startsWith("q4:")) {
+    if (s.step !== "stack") return;
+    if (data === "q4:next") {
+      s.step = "a1";
+      await putSess(uid, s);
+      await sendA1(chat);
+    }
+    return;
+  }
+
+  // A1/A2/A3
+  if (data.startsWith("a1:")) { if (s.step !== "a1") return; s.a1 = data.split(":")[1]; s.step = "a2"; await putSess(uid, s); await sendA2(chat); return; }
+  if (data.startsWith("a2:")) { if (s.step !== "a2") return; s.a2 = data.split(":")[1]; s.step = "a3"; await putSess(uid, s); await sendA3(chat); return; }
+  if (data.startsWith("a3:")) { if (s.step !== "a3") return; s.a3 = data.split(":")[1]; s.step = "about"; await putSess(uid, s); await sendAbout(chat); return; }
+
+  // Q7: тайм-слоты
+  if (data.startsWith("q7w:")) {
+    if (s.step !== "time") return;
+    const opt = data.split(":")[1];
+    if (opt === "done") {
+      if (!s.time_zone || !s.time_windows.length) {
+        await tg("sendMessage", { chat_id: chat, text: "Укажи часовой пояс и хотя бы одно окно времени." });
+        return;
+      }
+      await tg("sendMessage", { chat_id: chat, text: "Опционально: напиши 2–3 конкретных слота (или «-» для пропуска)." });
+      return;
+    }
+    toggle(s.time_windows, opt);
+    await putSess(uid, s);
+    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbTime(s) });
+    return;
+  }
+  if (data.startsWith("q7tz:")) {
+    if (s.step !== "time") return;
+    s.time_zone = data.split(":")[1];
+    await putSess(uid, s);
+    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbTime(s) });
+    return;
+  }
 }
+
+
+
+
+
+
 
 /* ---------------- Utils ---------------- */
 function toggle(arr,val){ const i=arr.indexOf(val); if(i>=0) arr.splice(i,1); else arr.push(val); }
