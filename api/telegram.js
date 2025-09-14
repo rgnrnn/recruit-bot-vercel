@@ -1,7 +1,6 @@
 // api/telegram.js — Telegram webhook (Vercel, Node 20, ESM)
-// Полный поток: Q1 consent -> Q2 name -> Q3 interests (multi) -> Q4 stack (multi)
-// -> Q5 A1/A2/A3 -> Q6 about (text) -> Q7 time zone + windows + slots -> FINAL (LLM + Sheets)
-// Всюду есть «🔁 Начать заново» и панель «▶️ Продолжить / 🔁 Начать заново».
+// Полный поток: Q1 consent -> Q2 name -> Age -> Q4 interests (multi) -> Q5 stack (multi)
+// -> A1/A2/A3 -> about (text) -> time zone + windows + slots -> FINAL (LLM + Sheets)
 
 const TOKEN        = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID     = process.env.ADMIN_CHAT_ID || "";
@@ -18,9 +17,10 @@ const OPENAI_MODEL   = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
 const NO_CHAT = "Я не веду переписку — используй кнопки ниже";
 
+// --- Q3 Age ---
 const AGE_OPTIONS = ["18–20","21–23","24–26","27–29","30–33","34–37","более 38"];
-// Шаг 4: пары кнопок (2 колонки)
-// Шаг 4: элементы с ID (чтобы callback_data были короткими и без двоеточий внутри текста)
+
+// --- Q4 Interests (ID + labels для стабильных callback_data) ---
 const INTEREST_ITEMS = [
   { id: "i_backend",  label: "Backend (f.ex: Python/FastAPI/Postgres)" },
   { id: "i_frontend", label: "Frontend (f.ex: React/TS)" },
@@ -41,8 +41,6 @@ const INTEREST_ITEMS = [
   { id: "i_cloud",    label: "Cloud (AWS/GCP)" },
   { id: "i_dist",     label: "Distributed Systems (CQRS/Event Sourcing)" },
 ];
-
-// Пары для двух колонок (только ID)
 const INTEREST_PAIRS = [
   ["i_backend", "i_frontend"],
   ["i_graph", "i_vector"],
@@ -54,8 +52,9 @@ const INTEREST_PAIRS = [
   ["i_testing", "i_ux_ui"],
   ["i_cloud", "i_dist"],
 ];
+const LABEL_BY_ID = Object.fromEntries(INTEREST_ITEMS.map(x => [x.id, x.label]));
 
-// Шаг 5: уверенный production-стек
+// --- Q5 Stack (ID + labels) ---
 const STACK_ITEMS = [
   { id: "s_py_fastapi",    label: "Python/FastAPI" },
   { id: "s_postgres",      label: "PostgreSQL/SQL" },
@@ -78,7 +77,6 @@ const STACK_ITEMS = [
   { id: "s_cloud",         label: "Cloud (AWS/GCP)" },
   { id: "s_distributed",   label: "Distributed Systems (CQRS/Event Sourcing)" },
 ];
-// пары (2 колонки)
 const STACK_PAIRS = [
   ["s_py_fastapi","s_postgres"],
   ["s_neo4j","s_pgvector"],
@@ -93,24 +91,17 @@ const STACK_PAIRS = [
 ];
 const STACK_LABEL_BY_ID = Object.fromEntries(STACK_ITEMS.map(x => [x.id, x.label]));
 
-
-
-
-
-
-
-// Быстрые мапы
-const LABEL_BY_ID = Object.fromEntries(INTEREST_ITEMS.map(x => [x.id, x.label]));
-
-
-
-
+// Резерв старых констант (не используются, можно удалить при желании)
 const A_INTERESTS = ["Backend","Graph/Neo4j","Vector/LLM","Frontend","DevOps/MLOps","Data/ETL","Product/Coordination"];
 const A_STACK     = ["Python/FastAPI","PostgreSQL/SQL","Neo4j","pgvector","LangChain/LangGraph","React/TS","Docker/K8s/Linux","CI/GitHub"];
 const A1 = ["Быстро прототипирую","Проектирую основательно","Исследую гипотезы","Синхронизирую людей"];
 const A2 = ["MVP важнее идеала","Полирую до совершенства"];
 const A3 = ["Риск/скорость","Надёжность/предсказуемость"];
 const TIME_WINDOWS = ["будни утро","будни день","будни вечер","выходные утро","выходные день","выходные вечер"];
+
+// Лимиты мультивыбора
+const MAX_INTERESTS = 7;
+const MAX_STACK     = 7;
 
 /* ---------------- Redis (Upstash REST) ---------------- */
 function rUrl(path){ if(!REDIS_BASE||!REDIS_TOKEN) throw new Error("Redis env missing"); return new URL(REDIS_BASE+path); }
@@ -123,27 +114,25 @@ const rIncr=async(k,ex=60)=>{ const j=await rGET(`/incr/${encodeURIComponent(k)}
 async function seenUpdate(id){ try{ const j=await rSet(`upd:${id}`,"1",{EX:180,NX:true}); return j&&("result"in j)? j.result==="OK" : true; }catch{return true;} }
 async function overRL(uid,limit=12){ try{return (await rIncr(`rl:${uid}`,60))>limit;}catch{return false;} }
 
-
+/* ---------------- Session ---------------- */
 function newRun(){
   return {
     run_id:`${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`,
     started_at:new Date().toISOString(),
     step:"consent", consent:"", name:"",
     age:"",
-    interests:[],               // <— чтобы не ловить undefined на шаге 4
+    interests:[],
     other_interests:[],
     stack:[],
-    other_stack:[],             // <— сюда пишем «свой инструмент»
+    other_stack:[],
     a1:"", a2:"", a3:"",
     about:"", time_zone:"", time_windows:[], specific_slots_text:"",
     llm:{}
   };
 }
-
-
-
 async function getSess(uid){
-  try{ const j=await rGet(`sess:${uid}`); if(!j?.result) return newRun();
+  try{
+    const j=await rGet(`sess:${uid}`); if(!j?.result) return newRun();
     let s; try{s=JSON.parse(j.result);}catch{return newRun();}
     if(!Array.isArray(s.interests)) s.interests=[];
     if(!Array.isArray(s.stack)) s.stack=[];
@@ -173,11 +162,7 @@ async function readBody(req){
   try{ return JSON.parse(raw||"{}"); }catch{ return {}; }
 }
 
-
-
-
-
-// -------- Welcome copy (FIXED) --------
+/* ---------------- Copy / Keyboards ---------------- */
 const CONSENT_TEXT = `Старт в команде со-основателей: партнерская доля, право голоса в архитектуре и темп, соответствующий уровню задач. 🔥🤝
 Ядро продукта формируется сейчас — редкий шанс зайти в проект, который сшивает три мира. 🧠✨
 Промышленный «операционный интеллект» меняет правила в работе с данными: от хаоса файлов и чатов — к системе, где решения рождаются за секунды, а не за недели. 🏭⚙️⏱️
@@ -185,32 +170,16 @@ const CONSENT_TEXT = `Старт в команде со-основателей: 
 Формат потенциального взаимодействия - доля и партнёрство: больше влияния, больше ответственности, быстрее рост. 🤝📈🚀
 `;
 
-
-
-
-
-
-/* ---------------- Keyboards ---------------- */
 const kbConsent = () => ({
   inline_keyboard: [
     [
       { text: "✅ Согласен", callback_data: "consent_yes" },
-      { text: "❌ Не сейчас",        callback_data: "consent_no"  }
+      { text: "❌ Не сейчас", callback_data: "consent_no"  }
     ]
   ]
 });
-
-
-
-
-
 const kbContinueReset = () => ({ inline_keyboard:[[ {text:"▶️ Продолжить",callback_data:"continue"}, {text:"🔁 Начать заново",callback_data:"reset_start"} ]]});
-const kbName = () => ({
-  inline_keyboard: [
-    [{ text: "🔁 Начать заново", callback_data: "reset_start" }]
-  ]
-});
-
+const kbName = () => ({ inline_keyboard: [[{ text: "🔁 Начать заново", callback_data: "reset_start" }]] });
 const kbSingle = (prefix, opts)=>({ inline_keyboard: opts.map(o=>[{text:o,callback_data:`${prefix}:${o}`}]).concat([[{text:"🔁 Начать заново",callback_data:"reset_start"}]]) });
 
 function kbInterests(selectedLabels) {
@@ -224,11 +193,9 @@ function kbInterests(selectedLabels) {
     ]);
   }
   rows.push([{ text: "🟢 ДАЛЬШЕ ➜", callback_data: "q3:next" }]);
-  rows.push([{ text: "🔁 Начать заново", callback_data: "reset_start" }]); // вернули reset
+  rows.push([{ text: "🔁 Начать заново", callback_data: "reset_start" }]);
   return { inline_keyboard: rows };
 }
-
-
 function kbStack(selectedLabels) {
   const rows = [];
   for (const [leftId, rightId] of STACK_PAIRS) {
@@ -243,18 +210,6 @@ function kbStack(selectedLabels) {
   rows.push([{ text: "🔁 Начать заново", callback_data: "reset_start" }]);
   return { inline_keyboard: rows };
 }
-
-
-
-
-
-
-function kbMulti(prefix,options,selected){
-  const rows = options.map(o=>[{text:`${selected.includes(o)?"☑️":"⬜️"} ${o}`,callback_data:`${prefix}:${o}`}]);
-  rows.push([{text:"Дальше ➜",callback_data:`${prefix}:next`}]);
-  rows.push([{text:"🔁 Начать заново",callback_data:"reset_start"}]);
-  return { inline_keyboard: rows };
-}
 function kbTime(sess){
   const rows = [
     [{text:"TZ: Europe/Moscow",callback_data:"q7tz:Europe/Moscow"},{text:"TZ: Europe/Amsterdam",callback_data:"q7tz:Europe/Amsterdam"}],
@@ -267,32 +222,14 @@ function kbTime(sess){
 
 /* ---------------- Screens ---------------- */
 async function sendWelcome(chat, uid) {
-  await tg("sendMessage", {
-    chat_id: chat,
-    text: CONSENT_TEXT,
-    parse_mode: "HTML",
-    reply_markup: kbConsent()
-  });
+  await tg("sendMessage", { chat_id: chat, text: CONSENT_TEXT, parse_mode: "HTML", reply_markup: kbConsent() });
 }
 async function sendName(chat, uid) {
-  await tg("sendMessage", {
-    chat_id: chat,
-    text: "2) Как к тебе обращаться? Введи имя текстом.",
-    parse_mode: "HTML",
-    reply_markup: kbName()
-  });
+  await tg("sendMessage", { chat_id: chat, text: "2) Как к тебе обращаться? Введи имя текстом.", parse_mode: "HTML", reply_markup: kbName() });
 }
-
-
 async function sendAge(chat, uid, s) {
-  await tg("sendMessage", {
-    chat_id: chat,
-    text: "3) Укажи возраст:",
-    parse_mode: "HTML",
-    reply_markup: kbSingle("age", AGE_OPTIONS) // одиночный выбор
-  });
+  await tg("sendMessage", { chat_id: chat, text: "3) Укажи возраст:", parse_mode: "HTML", reply_markup: kbSingle("age", AGE_OPTIONS) });
 }
-
 async function sendInterests(chat, uid, s) {
   await tg("sendMessage", {
     chat_id: chat,
@@ -301,7 +238,6 @@ async function sendInterests(chat, uid, s) {
     reply_markup: kbInterests(s.interests || [])
   });
 }
-
 async function sendStack(chat, uid, s){
   await tg("sendMessage", {
     chat_id: chat,
@@ -310,10 +246,9 @@ async function sendStack(chat, uid, s){
     reply_markup: kbStack(s.stack || [])
   });
 }
-
-async function sendA1(chat){ await tg("sendMessage",{chat_id:chat,text:"5/A1) Что ближе по стилю?",reply_markup:kbSingle("a1",A1)}); }
-async function sendA2(chat){ await tg("sendMessage",{chat_id:chat,text:"5/A2) Что важнее?",reply_markup:kbSingle("a2",A2)}); }
-async function sendA3(chat){ await tg("sendMessage",{chat_id:chat,text:"5/A3) Что предпочитаешь?",reply_markup:kbSingle("a3",A3)}); }
+async function sendA1(chat){ await tg("sendMessage",{chat_id:chat,text:"A1) Что ближе по стилю?",reply_markup:kbSingle("a1",A1)}); }
+async function sendA2(chat){ await tg("sendMessage",{chat_id:chat,text:"A2) Что важнее?",reply_markup:kbSingle("a2",A2)}); }
+async function sendA3(chat){ await tg("sendMessage",{chat_id:chat,text:"A3) Что предпочитаешь?",reply_markup:kbSingle("a3",A3)}); }
 async function sendAbout(chat){ await tg("sendMessage",{chat_id:chat,text:"6) 2–5 строк о себе + ссылки (в одном сообщении)."}); }
 async function sendTime(chat, sess){ await tg("sendMessage",{chat_id:chat,text:"7) Укажи часовой пояс (кнопкой) и удобные окна (мультивыбор). Затем «Готово».",reply_markup:kbTime(sess)}); }
 
@@ -436,7 +371,7 @@ async function resetFlow(uid,chat){
   await tg("sendMessage",{chat_id:chat,text:"🔁 Начинаем заново — это новая попытка. Предыдущие ответы сохранятся отдельно при записи в базу."});
   await sendWelcome(chat,uid);
 }
-async function continueFlow(uid,chat,s,username){
+async function continueFlow(uid,chat,s){
   if (s.step==="name")        { await sendName(chat,uid); return; }
   if (s.step === "age")       { await sendAge(chat, uid, s); return; }
   if (s.step==="interests")   { await sendInterests(chat,uid,s);   return; }
@@ -481,10 +416,12 @@ async function onMessage(m){
     await sendAge(chat, uid, s);
     return;
   }
+
+  // Q6 about -> Q7 time
   if (s.step==="about"){ s.about=text.slice(0,1200); s.step="time"; await putSess(uid,s); await sendTime(chat,s); return; }
   if (s.step==="time" && s.time_zone && s.time_windows.length){ s.specific_slots_text=text.slice(0,300); await putSess(uid,s); await finalize(chat,m.from,s); return; }
 
-  // На шаге "interests" любое некомандное сообщение — это свой вариант
+  // Q4: свой вариант
   if (s.step === "interests" && text && !text.startsWith("/")) {
     s.other_interests = s.other_interests || [];
     if (s.other_interests.length < 5) s.other_interests.push(text.slice(0, 120));
@@ -493,25 +430,19 @@ async function onMessage(m){
     return;
   }
 
-// Шаг 5: свой инструмент текстом
-if (s.step === "stack" && text && !text.startsWith("/")) {
-  s.other_stack = s.other_stack || [];
-  if (s.other_stack.length < 5) s.other_stack.push(text.slice(0, 120));
-  await putSess(uid, s);
-  await tg("sendMessage", { chat_id: chat, text: "Добавил в стек. Отметь чекбоксы и/или жми «ДАЛЬШЕ ➜»." });
-  return;
-}
+  // Q5: свой инструмент
+  if (s.step === "stack" && text && !text.startsWith("/")) {
+    s.other_stack = s.other_stack || [];
+    if (s.other_stack.length < 5) s.other_stack.push(text.slice(0, 120));
+    await putSess(uid, s);
+    await tg("sendMessage", { chat_id: chat, text: "Добавил в стек. Отметь чекбоксы и/или жми «ДАЛЬШЕ ➜»." });
+    return;
+  }
 
-
-
-  
-
-  
   await tg("sendMessage",{chat_id:chat,text:NO_CHAT,reply_markup:kbContinueReset()});
 }
 
-
-
+/* ---------------- onCallback ---------------- */
 async function onCallback(q) {
   const uid  = q.from.id;
   if (await overRL(uid)) return;
@@ -520,131 +451,150 @@ async function onCallback(q) {
   const mid  = q.message.message_id;
   const data = q.data || "";
 
-  try { await tg("answerCallbackQuery", { callback_query_id: q.id }); } catch {}
+  const answerCb = (text = "", alert = false) =>
+    tg("answerCallbackQuery", { callback_query_id: q.id, text, show_alert: alert });
 
   let s = await getSess(uid);
 
   // Навигация
-  if (data === "continue")     { await continueFlow(uid, chat, s); return; }
-  if (data === "reset_start")  { await resetFlow(uid, chat);       return; }
+  if (data === "continue")     { await continueFlow(uid, chat, s); await answerCb(); return; }
+  if (data === "reset_start")  { await resetFlow(uid, chat);       await answerCb(); return; }
 
   // Согласие
   if (data === "consent_yes") {
-    if (s.step !== "consent") return;
-    s.consent = "yes";
-    s.step    = "name";
+    if (s.step !== "consent") { await answerCb(); return; }
+    s.consent = "yes"; s.step = "name";
     await putSess(uid, s);
-    try {
-      await tg("editMessageText", { chat_id: chat, message_id: mid, text: "✅ Спасибо за согласие на связь.", parse_mode: "HTML" });
-    } catch {}
+    try { await tg("editMessageText", { chat_id: chat, message_id: mid, text: "✅ Спасибо за согласие на связь.", parse_mode: "HTML" }); } catch {}
     await sendName(chat, uid);
+    await answerCb();
     return;
   }
   if (data === "consent_no") {
-    if (s.step !== "consent") return;
-    try {
-      await tg("editMessageText", { chat_id: chat, message_id: mid, text: "Ок. Если передумаешь — /start" });
-    } catch {}
+    if (s.step !== "consent") { await answerCb(); return; }
+    try { await tg("editMessageText", { chat_id: chat, message_id: mid, text: "Ок. Если передумаешь — /start" }); } catch {}
     await delSess(uid);
+    await answerCb();
     return;
   }
 
-  // Возраст (после имени)
+  // Возраст
   if (data.startsWith("age:")) {
-    if (s.step !== "age") return;
+    if (s.step !== "age") { await answerCb(); return; }
     s.age  = data.split(":")[1];
     s.step = "interests";
     await putSess(uid, s);
     await sendInterests(chat, uid, s);
+    await answerCb();
     return;
   }
 
-  // Шаг 4: интересы — toggl по ID
+  // Q4: interests toggle by ID + лимит
   if (data.startsWith("q3id:")) {
-    if (s.step !== "interests") return;
+    if (s.step !== "interests") { await answerCb(); return; }
     const id    = data.slice(5);
     const label = LABEL_BY_ID[id];
-    if (!label) return;
-    toggle(s.interests, label);
+    if (!label) { await answerCb(); return; }
+
+    const idx = s.interests.indexOf(label);
+    if (idx >= 0) {
+      s.interests.splice(idx, 1);
+      await putSess(uid, s);
+      await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbInterests(s.interests) });
+      await answerCb();
+      return;
+    }
+    if ((s.interests?.length || 0) >= MAX_INTERESTS) { await answerCb(`Можно выбрать не более ${MAX_INTERESTS} пунктов`); return; }
+
+    s.interests.push(label);
     await putSess(uid, s);
-    await tg("editMessageReplyMarkup", {
-      chat_id: chat, message_id: mid, reply_markup: kbInterests(s.interests)
-    });
+    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbInterests(s.interests) });
+    await answerCb();
     return;
   }
 
-  // Шаг 4: интересы — только NEXT
+  // Q4: NEXT
   if (data.startsWith("q3:")) {
-    if (s.step !== "interests") return;
+    if (s.step !== "interests") { await answerCb(); return; }
     if (data === "q3:next") {
       s.step = "stack";
       await putSess(uid, s);
       await sendStack(chat, uid, s);
     }
+    await answerCb();
     return;
   }
 
-  // Шаг 5: стек — toggl по ID
+  // Q5: stack toggle by ID + лимит
   if (data.startsWith("q4id:")) {
-    if (s.step !== "stack") return;
+    if (s.step !== "stack") { await answerCb(); return; }
     const id    = data.slice(5);
     const label = STACK_LABEL_BY_ID[id];
-    if (!label) return;
-    toggle(s.stack, label);
+    if (!label) { await answerCb(); return; }
+
+    const idx = s.stack.indexOf(label);
+    if (idx >= 0) {
+      s.stack.splice(idx, 1);
+      await putSess(uid, s);
+      await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbStack(s.stack) });
+      await answerCb();
+      return;
+    }
+    if ((s.stack?.length || 0) >= MAX_STACK) { await answerCb(`Можно выбрать не более ${MAX_STACK} пунктов`); return; }
+
+    s.stack.push(label);
     await putSess(uid, s);
-    await tg("editMessageReplyMarkup", {
-      chat_id: chat, message_id: mid, reply_markup: kbStack(s.stack)
-    });
+    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbStack(s.stack) });
+    await answerCb();
     return;
   }
 
-  // Шаг 5: стек — только NEXT
+  // Q5: NEXT
   if (data.startsWith("q4:")) {
-    if (s.step !== "stack") return;
+    if (s.step !== "stack") { await answerCb(); return; }
     if (data === "q4:next") {
       s.step = "a1";
       await putSess(uid, s);
       await sendA1(chat);
     }
+    await answerCb();
     return;
   }
 
   // A1/A2/A3
-  if (data.startsWith("a1:")) { if (s.step !== "a1") return; s.a1 = data.split(":")[1]; s.step = "a2"; await putSess(uid, s); await sendA2(chat); return; }
-  if (data.startsWith("a2:")) { if (s.step !== "a2") return; s.a2 = data.split(":")[1]; s.step = "a3"; await putSess(uid, s); await sendA3(chat); return; }
-  if (data.startsWith("a3:")) { if (s.step !== "a3") return; s.a3 = data.split(":")[1]; s.step = "about"; await putSess(uid, s); await sendAbout(chat); return; }
+  if (data.startsWith("a1:")) { if (s.step !== "a1") { await answerCb(); return; } s.a1 = data.split(":")[1]; s.step = "a2"; await putSess(uid, s); await sendA2(chat); await answerCb(); return; }
+  if (data.startsWith("a2:")) { if (s.step !== "a2") { await answerCb(); return; } s.a2 = data.split(":")[1]; s.step = "a3"; await putSess(uid, s); await sendA3(chat); await answerCb(); return; }
+  if (data.startsWith("a3:")) { if (s.step !== "a3") { await answerCb(); return; } s.a3 = data.split(":")[1]; s.step = "about"; await putSess(uid, s); await sendAbout(chat); await answerCb(); return; }
 
-  // Q7: тайм-слоты
+  // Q7: time windows
   if (data.startsWith("q7w:")) {
-    if (s.step !== "time") return;
+    if (s.step !== "time") { await answerCb(); return; }
     const opt = data.split(":")[1];
     if (opt === "done") {
       if (!s.time_zone || !s.time_windows.length) {
         await tg("sendMessage", { chat_id: chat, text: "Укажи часовой пояс и хотя бы одно окно времени." });
+        await answerCb();
         return;
       }
       await tg("sendMessage", { chat_id: chat, text: "Опционально: напиши 2–3 конкретных слота (или «-» для пропуска)." });
+      await answerCb();
       return;
     }
     toggle(s.time_windows, opt);
     await putSess(uid, s);
     await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbTime(s) });
+    await answerCb();
     return;
   }
   if (data.startsWith("q7tz:")) {
-    if (s.step !== "time") return;
+    if (s.step !== "time") { await answerCb(); return; }
     s.time_zone = data.split(":")[1];
     await putSess(uid, s);
     await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbTime(s) });
+    await answerCb();
     return;
   }
 }
-
-
-
-
-
-
 
 /* ---------------- Utils ---------------- */
 function toggle(arr,val){ const i=arr.indexOf(val); if(i>=0) arr.splice(i,1); else arr.push(val); }
