@@ -385,7 +385,7 @@ async function finalize(chat, user, s){
 
   if (ADMIN_ID) {
     const digest = `${llm.fit_score ?? "?"} — ${(llm.name || s.name || username)} — ${(llm.roles||[]).slice(0,2).join(",")}`;
-    await tg("sendMessage",{chat_id:ADMIN_ID,text:`yовая анкета: ${digest}`});
+    await tg("sendMessage",{chat_id:ADMIN_ID,text:`новая анкета: ${digest}`});
   }
   await tg("sendMessage",{chat_id:chat,text:"✅ готово! спасибо, вернёмся с предложением слота"});
   await delSess(user.id);
