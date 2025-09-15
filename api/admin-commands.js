@@ -1,127 +1,123 @@
-// Code.gs — Google Sheets writer + admin ops
-const PROPS   = PropertiesService.getScriptProperties();
-const SHEET_ID= PROPS.getProperty('GOOGLE_SHEET_ID');
-const SECRET  = PROPS.getProperty('SECRET');
+// api/admin-commands.js
+// Админ-команды для Telegram-бота. Вызывается из api/telegram.js.
+// Требует env: ADMIN_ID, SHEETS_WEBHOOK_URL, SHEETS_WEBHOOK_SECRET, TELEGRAM_BOT_TOKEN.
 
-// Шапка — 24 колонки (точно в таком порядке!)
-const HEADERS = [
-  "timestamp","run_id","started_at","telegram","telegram_id",
-  "q1_consent","q2_name","q3_interests","q4_stack",
-  "q5_a1","q5_a2","q5_a3","q6_about",
-  "q7_time_zone","q7_time_windows","q7_specific_slots",
-  "llm_json","fit_score","roles","stack","work_style_json",
-  "time_commitment","links","summary"
-];
+const URL  = process.env.SHEETS_WEBHOOK_URL;
+const KEY  = process.env.SHEETS_WEBHOOK_SECRET;
+const ADMIN_ID = String(process.env.ADMIN_CHAT_ID || "");
 
-function _sheet() {
-  const sh = SpreadsheetApp.openById(SHEET_ID).getSheets()[0];
-  const r1 = sh.getRange(1,1,1,HEADERS.length).getValues()[0];
-  const ok = HEADERS.every((h,i)=> (r1[i]||"") === h);
-  if (!ok) { sh.clear(); sh.getRange(1,1,1,HEADERS.length).setValues([HEADERS]); }
-  return sh;
+async function callWriter(op, payload = {}, asText = false) {
+  if (!URL || !KEY) return { ok: false, reason: "env_missing" };
+  const body = { secret: KEY, op, ...payload };
+  const res = await fetch(URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return asText ? res.text() : res.json();
 }
-function _rows() {
-  const sh = _sheet();
-  const vals = sh.getDataRange().getValues();
-  const out = [];
-  for (let i=1;i<vals.length;i++){
-    const obj={}; HEADERS.forEach((h,idx)=>obj[h]=vals[i][idx]);
-    out.push(obj);
+
+function isAdmin(uid) {
+  return String(uid) === ADMIN_ID;
+}
+
+// формат короткой строки анкеты
+function lineOf(r) {
+  const name = r.q2_name || r.telegram || "?";
+  let roles = [];
+  try { roles = JSON.parse(r.roles || "[]"); } catch {}
+  const rolesShort = roles.slice(0,2).join(", ") || "-";
+  const fit  = (r.fit_score ?? "").toString();
+  return `${fit.padStart(2," ")} ★  ${name}  ·  ${rolesShort}`;
+}
+
+export async function handleAdminCommand({ text, uid, chat }, tg) {
+  if (!isAdmin(uid)) return false;
+  const lc = text.trim().toLowerCase();
+
+  // /help
+  if (lc === "/help") {
+    const help =
+`Доступные команды администратора:
+/help – список команд
+/export – выгрузка CSV (24 колонки)
+/today – анкеты за последние 24 часа: количество, средний fit, топ-интересы/роли
+/stats – общее: всего, за 7/30 дней, топ-3 интересов и стека
+/who [N] – последние N анкет (по умолчанию 10)
+/find <mask> – поиск по имени/телеграму/ролям
+/slots – агрегированные окна времени {"days":...,"slots":...}`;
+    await tg("sendMessage", { chat_id: chat, text: help });
+    return true;
   }
-  return out;
-}
-function _json(s, def){ try{ return JSON.parse(s||""); }catch(e){ return def; } }
-function _num(x){ const n=Number(x); return isFinite(n)?n:0; }
 
-// CSV
-function _csv(rows){
-  const all = [HEADERS].concat(rows.map(r => HEADERS.map(h => r[h])));
-  return all.map(row => row.map(cell=>{
-    const s = String(cell==null?"":cell).replace(/"/g,'""');
-    return `"${s}"`;
-  }).join(",")).join("\n");
-}
-
-function doPost(e) {
-  try{
-    const body = JSON.parse(e.postData.contents||"{}");
-    if (body.secret !== SECRET) return _out({ok:false, reason:"forbidden"});
-    const op = body.op||"";
-
-    if (op==="append") {
-      const row = body.row; if (!Array.isArray(row) || row.length!==HEADERS.length) return _out({ok:false,reason:"bad_row"});
-      _sheet().appendRow(row); return _out({ok:true});
-    }
-
-    if (op==="export_csv") {
-      return ContentService.createTextOutput(_csv(_rows()))
-        .setMimeType(ContentService.MimeType.CSV);
-    }
-
-    if (op==="today") {
-      const rows=_rows().filter(r=> (new Date(r.timestamp)).getTime() >= Date.now()-24*3600*1000);
-      const total=rows.length;
-      const avg = total? Math.round(rows.reduce((a,r)=>a+_num(r.fit_score),0)/total) : 0;
-      // топ интересы/роли
-      const cntI = {}, cntR = {};
-      rows.forEach(r=>{
-        (_json(r.q3_interests,[])).forEach(x=>cntI[x]=(cntI[x]||0)+1);
-        (_json(r.roles,[])).forEach(x=>cntR[x]=(cntR[x]||0)+1);
-      });
-      const top = (m)=>Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([k])=>k);
-      return _out({ok:true,total,avg_fit:avg,top_interests:top(cntI),top_roles:top(cntR)});
-    }
-
-    if (op==="stats") {
-      const rows=_rows();
-      const now=Date.now();
-      const last7 = rows.filter(r=> (new Date(r.timestamp)).getTime()>=now-7*86400000).length;
-      const last30= rows.filter(r=> (new Date(r.timestamp)).getTime()>=now-30*86400000).length;
-
-      const cntI={}, cntS={};
-      rows.forEach(r=>{
-        _json(r.q3_interests,[]).forEach(x=>cntI[x]=(cntI[x]||0)+1);
-        _json(r.q4_stack,[]).forEach(x=>cntS[x]=(cntS[x]||0)+1);
-      });
-      const pick3 = (m)=>Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([k])=>k);
-      return _out({ok:true,total:rows.length,last7,last30,top_interests:pick3(cntI),top_stack:pick3(cntS)});
-    }
-
-    if (op==="who") {
-      const n = Math.min(50, Math.max(1, Number(body.limit||10)));
-      const rows=_rows().sort((a,b)=> new Date(b.timestamp)-new Date(a.timestamp)).slice(0,n);
-      return _out({ok:true, rows});
-    }
-
-    if (op==="find") {
-      const q=(body.q||"").toString().toLowerCase();
-      if (!q) return _out({ok:true, rows:[]});
-      const rows=_rows().filter(r=>{
-        const name=(r.q2_name||"").toLowerCase();
-        const tg  =(r.telegram||"").toLowerCase();
-        const roles= (_json(r.roles,[])).join(" ").toLowerCase();
-        return name.includes(q)||tg.includes(q)||roles.includes(q);
-      }).slice(0,20).sort((a,b)=> new Date(b.timestamp)-new Date(a.timestamp));
-      return _out({ok:true, rows});
-    }
-
-    if (op==="slots") {
-      const rows=_rows();
-      const days={}, slots={};
-      rows.forEach(r=>{
-        const tw = _json(r.q7_time_windows, null);
-        if (tw && typeof tw==="object"){
-          (tw.days || []).forEach(d=> days[d]=(days[d]||0)+1);
-          (tw.slots|| []).forEach(s=> slots[s]=(slots[s]||0)+1);
-        }
-      });
-      return _out({ok:true, days, slots});
-    }
-
-    return _out({ok:false, reason:"unknown_op"});
-  }catch(err){
-    return _out({ok:false, reason:String(err)});
+  // /export
+  if (lc.startsWith("/export")) {
+    const csv = await callWriter("export_csv", {}, true);
+    const fd = new FormData();
+    fd.append("chat_id", String(chat));
+    fd.append("document", new Blob([csv], { type: "text/csv" }), "recruits.csv");
+    await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
+    return true;
   }
+
+  // /today
+  if (lc.startsWith("/today")) {
+    const j = await callWriter("today");
+    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/today: ошибка"}); return true; }
+    const msg =
+`За 24ч: ${j.total} анкет
+Средний fit: ${j.avg_fit}
+Топ интересов: ${j.top_interests.join(", ") || "-"}
+Топ ролей: ${j.top_roles.join(", ") || "-"}`;
+    await tg("sendMessage", { chat_id: chat, text: msg });
+    return true;
+  }
+
+  // /stats
+  if (lc.startsWith("/stats")) {
+    const j = await callWriter("stats");
+    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/stats: ошибка"}); return true; }
+    const msg =
+`Всего: ${j.total}
+За 7 дней: ${j.last7}, за 30 дней: ${j.last30}
+Топ-3 интересов: ${j.top_interests.join(", ") || "-"}
+Топ-3 стека: ${j.top_stack.join(", ") || "-"}`;
+    await tg("sendMessage", { chat_id: chat, text: msg });
+    return true;
+  }
+
+  // /who [N]
+  if (lc.startsWith("/who")) {
+    const parts = text.trim().split(/\s+/);
+    const n = Math.max(1, Math.min(50, Number(parts[1]) || 10));
+    const j = await callWriter("who", { limit: n });
+    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/who: ошибка"}); return true; }
+    const lines = j.rows.map(lineOf).join("\n") || "–";
+    await tg("sendMessage", { chat_id: chat, text: lines });
+    return true;
+  }
+
+  // /find <mask>
+  if (lc.startsWith("/find")) {
+    const mask = text.replace(/^\/find\s*/i, "").trim();
+    if (!mask) { await tg("sendMessage",{chat_id:chat,text:"/find <mask>"}); return true; }
+    const j = await callWriter("find", { q: mask, limit: 20 });
+    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/find: ошибка"}); return true; }
+    const lines = j.rows.map(lineOf).join("\n") || "–";
+    await tg("sendMessage", { chat_id: chat, text: lines });
+    return true;
+  }
+
+  // /slots
+  if (lc.startsWith("/slots")) {
+    const j = await callWriter("slots");
+    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/slots: ошибка"}); return true; }
+    const days  = Object.entries(j.days || {}).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k} (${v})`).join(", ") || "-";
+    const slots = Object.entries(j.slots|| {}).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k} (${v})`).join(", ") || "-";
+    const msg = `Дни: ${days}\nСлоты: ${slots}`;
+    await tg("sendMessage", { chat_id: chat, text: msg });
+    return true;
+  }
+
+  return false; // не админ-команда
 }
-function _out(obj){ return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON); }
-function doGet(){ return ContentService.createTextOutput("OK"); }
