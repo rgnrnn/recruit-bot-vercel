@@ -506,14 +506,14 @@ async function onCallback(q) {
     if (s.step !== "consent") { await answerCb(); return; }
     s.consent = "yes"; s.step = "name";
     await putSess(uid, s);
-    try { await tg("editMessageText", { chat_id: chat, message_id: mid, text: "✅ Спасибо за согласие на связь.", parse_mode: "HTML" }); } catch {}
+    try { await tg("editMessageText", { chat_id: chat, message_id: mid, text: "✅ спасибо за согласие на связь", parse_mode: "HTML" }); } catch {}
     await sendName(chat, uid);
     await answerCb();
     return;
   }
   if (data === "consent_no") {
     if (s.step !== "consent") { await answerCb(); return; }
-    try { await tg("editMessageText", { chat_id: chat, message_id: mid, text: "Ок. Если передумаешь — /start" }); } catch {}
+    try { await tg("editMessageText", { chat_id: chat, message_id: mid, text: "ок. если передумаешь — /start" }); } catch {}
     await delSess(uid);
     await answerCb();
     return;
@@ -544,7 +544,7 @@ async function onCallback(q) {
       await answerCb();
       return;
     }
-    if ((s.interests?.length || 0) >= MAX_INTERESTS) { await answerCb(`Можно выбрать не более ${MAX_INTERESTS} пунктов`); return; }
+    if ((s.interests?.length || 0) >= MAX_INTERESTS) { await answerCb(`можно выбрать не более ${MAX_INTERESTS} пунктов`); return; }
 
     s.interests.push(label);
     await putSess(uid, s);
@@ -574,7 +574,7 @@ async function onCallback(q) {
       await answerCb();
       return;
     }
-    if ((s.stack?.length || 0) >= MAX_STACK) { await answerCb(`Можно выбрать не более ${MAX_STACK} пунктов`); return; }
+    if ((s.stack?.length || 0) >= MAX_STACK) { await answerCb(`можно выбрать не более ${MAX_STACK} пунктов`); return; }
 
     s.stack.push(label);
     await putSess(uid, s);
@@ -616,7 +616,7 @@ async function onCallback(q) {
   if (data === "q7:done") {
     if (s.step !== "time") { await answerCb(); return; }
     if (!(s.time_days?.length) || !(s.time_slots?.length)) {
-      await tg("sendMessage", { chat_id: chat, text: "Отметь хотя бы один день и один временной слот." });
+      await tg("sendMessage", { chat_id: chat, text: "отметь хотя бы один день и один временной слот" });
       await answerCb();
       return;
     }
