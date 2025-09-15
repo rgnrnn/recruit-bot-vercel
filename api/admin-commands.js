@@ -49,22 +49,25 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     return true;
   }
 
-  // /export
+  // /export — CSV (UTF-16LE) с sep=;
   if (lc.startsWith("/export")) {
-    const csv = await callWriter("export_csv", {}, true);
+    // новый op из Apps Script
+    const j = await callWriter("export_csv_b64");
+    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/export: ошибка"}); return true; }
+  
+    const buf = Buffer.from(j.base64, "base64");
     const fd = new FormData();
     fd.append("chat_id", String(chat));
-    fd.append(
-      "document",
-      new Blob([csv], { type: "text/csv; charset=utf-8" }), // ← добавили charset
-      "recruits.csv"
-    );
+    // Даём MIME, который Excel точно ассоциирует с собой
+    fd.append("document", new Blob([buf], { type: "application/vnd.ms-excel" }), j.filename || "recruits.csv");
+  
     await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
       method: "POST",
-      body: fd
+      body: fd,
     });
     return true;
   }
+
 
 
   // /today
