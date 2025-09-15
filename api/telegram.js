@@ -103,6 +103,10 @@ const TIME_WINDOWS = ["будни утро","будни день","будни в
 const MAX_INTERESTS = 7;
 const MAX_STACK     = 7;
 
+// Rate-limit для callback'ов (кликов по чекбоксам), в минуту
+const RL_TOGGLE_PER_MIN  = 120; // для q3id:/q4id:
+const RL_DEFAULT_PER_MIN = 30;  // для остальных действий в onCallback
+
 /* ---------------- Redis (Upstash REST) ---------------- */
 function rUrl(path){ if(!REDIS_BASE||!REDIS_TOKEN) throw new Error("Redis env missing"); return new URL(REDIS_BASE+path); }
 async function rGET(path){ const r=await fetch(rUrl(path),{headers:{Authorization:`Bearer ${REDIS_TOKEN}`}}); return r.json(); }
@@ -233,7 +237,7 @@ async function sendAge(chat, uid, s) {
 async function sendInterests(chat, uid, s) {
   await tg("sendMessage", {
     chat_id: chat,
-    text: "4) Что реально драйвит в последние 12 месяцев?\nОтметь 2–5 направлений (чекбоксы). Можно дополнить своим вариантом обычным сообщением.",
+    text: "4) Что реально драйвит в последние 12 месяцев?\nОтметь 2–7 направлений (чекбоксы). Можно дополнить своим вариантом обычным сообщением.",
     parse_mode: "HTML",
     reply_markup: kbInterests(s.interests || [])
   });
@@ -367,20 +371,21 @@ export default async function handler(req,res){
 /* ---------------- Flow helpers ---------------- */
 function makeNew(){ return newRun(); }
 async function resetFlow(uid,chat){
-  const s = makeNew(); await putSess(uid,s);
+  const s = newRun();
+  await putSess(uid,s);
   await tg("sendMessage",{chat_id:chat,text:"🔁 Начинаем заново — это новая попытка. Предыдущие ответы сохранятся отдельно при записи в базу."});
   await sendWelcome(chat,uid);
 }
 async function continueFlow(uid,chat,s){
-  if (s.step==="name")        { await sendName(chat,uid); return; }
-  if (s.step === "age")       { await sendAge(chat, uid, s); return; }
-  if (s.step==="interests")   { await sendInterests(chat,uid,s);   return; }
-  if (s.step==="stack")       { await sendStack(chat,uid,s);       return; }
-  if (s.step==="a1")          { await sendA1(chat);                return; }
-  if (s.step==="a2")          { await sendA2(chat);                return; }
-  if (s.step==="a3")          { await sendA3(chat);                return; }
-  if (s.step==="about")       { await sendAbout(chat);             return; }
-  if (s.step==="time")        { await sendTime(chat, s);           return; }
+  if (s.step==="name")  { await sendName(chat,uid); return; }
+  if (s.step==="age")   { await sendAge(chat, uid, s); return; }
+  if (s.step==="interests"){ await sendInterests(chat,uid,s); return; }
+  if (s.step==="stack") { await sendStack(chat,uid,s); return; }
+  if (s.step==="a1")    { await sendA1(chat); return; }
+  if (s.step==="a2")    { await sendA2(chat); return; }
+  if (s.step==="a3")    { await sendA3(chat); return; }
+  if (s.step==="about") { await sendAbout(chat); return; }
+  if (s.step==="time")  { await sendTime(chat, s); return; }
   await sendWelcome(chat,uid);
 }
 
@@ -445,14 +450,19 @@ async function onMessage(m){
 /* ---------------- onCallback ---------------- */
 async function onCallback(q) {
   const uid  = q.from.id;
-  if (await overRL(uid)) return;
+  const data = q.data || "";
+
+  // helper для ответа на callback
+  const answerCb = (text = "", alert = false) =>
+    tg("answerCallbackQuery", { callback_query_id: q.id, text, show_alert: alert });
+
+  // отдельный rate-limit для тогглов чекбоксов (много быстрых кликов)
+  const isToggle = data.startsWith("q3id:") || data.startsWith("q4id:");
+  const tooFast  = await overRL(uid, isToggle ? RL_TOGGLE_PER_MIN : RL_DEFAULT_PER_MIN);
+  if (tooFast) { await answerCb("Слишком часто. Секунду…"); return; }
 
   const chat = q.message.chat.id;
   const mid  = q.message.message_id;
-  const data = q.data || "";
-
-  const answerCb = (text = "", alert = false) =>
-    tg("answerCallbackQuery", { callback_query_id: q.id, text, show_alert: alert });
 
   let s = await getSess(uid);
 
