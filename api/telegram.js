@@ -187,13 +187,13 @@ const CONSENT_TEXT = `старт в команде со-основателей: 
 
 const kbConsent = () => ({
   inline_keyboard: [[
-    { text: "✅ Согласен", callback_data: "consent_yes" },
+    { text: "✅ согласен", callback_data: "consent_yes" },
     { text: "❌ Не сейчас", callback_data: "consent_no"  }
   ]]
 });
-const kbContinueReset = () => ({ inline_keyboard:[[ {text:"▶️ Продолжить",callback_data:"continue"}, {text:"🔁 Начать заново",callback_data:"reset_start"} ]]});
-const kbName = () => ({ inline_keyboard: [[{ text: "🔁 Начать заново", callback_data: "reset_start" }]] });
-const kbSingle = (prefix, opts)=>({ inline_keyboard: opts.map(o=>[{text:o,callback_data:`${prefix}:${o}`}]).concat([[{text:"🔁 Начать заново",callback_data:"reset_start"}]]) });
+const kbContinueReset = () => ({ inline_keyboard:[[ {text:"▶️ продолжить",callback_data:"continue"}, {text:"🔁 начать заново",callback_data:"reset_start"} ]]});
+const kbName = () => ({ inline_keyboard: [[{ text: "🔁 начать заново", callback_data: "reset_start" }]] });
+const kbSingle = (prefix, opts)=>({ inline_keyboard: opts.map(o=>[{text:o,callback_data:`${prefix}:${o}`}]).concat([[{text:"🔁 начать заново",callback_data:"reset_start"}]]) });
 
 function kbInterests(selectedLabels) {
   const rows = [];
@@ -206,7 +206,7 @@ function kbInterests(selectedLabels) {
     ]);
   }
   rows.push([{ text: "🟢 ДАЛЬШЕ ➜", callback_data: "q3:next" }]);
-  rows.push([{ text: "🔁 Начать заново", callback_data: "reset_start" }]);
+  rows.push([{ text: "🔁 начать заново", callback_data: "reset_start" }]);
   return { inline_keyboard: rows };
 }
 function kbStack(selectedLabels) {
@@ -220,7 +220,7 @@ function kbStack(selectedLabels) {
     ]);
   }
   rows.push([{ text: "🟢 ДАЛЬШЕ ➜", callback_data: "q4:next" }]);
-  rows.push([{ text: "🔁 Начать заново", callback_data: "reset_start" }]);
+  rows.push([{ text: "🔁 начать заново", callback_data: "reset_start" }]);
   return { inline_keyboard: rows };
 }
 
@@ -242,7 +242,7 @@ function kbTimeDaysSlots(sess){
     rows.push(r);
   }
   rows.push([{ text: "🟢 ГОТОВО ➜", callback_data: "q7:done" }]);
-  rows.push([{ text: "🔁 Начать заново", callback_data: "reset_start" }]);
+  rows.push([{ text: "🔁 начать заново", callback_data: "reset_start" }]);
   return { inline_keyboard: rows };
 }
 
@@ -356,7 +356,7 @@ async function cmdDigest(chat){
 }
 
 async function finalize(chat, user, s){
-  await tg("sendMessage",{chat_id:chat,text:"⏳ Секунда, готовлю сводку…"});
+  await tg("sendMessage",{chat_id:chat,text:"⏳ cекунда, готовлю сводку…"});
   const llm = await runLLM(user, s) || {};
   s.llm = llm;
   const username = user.username ? "@"+user.username : String(user.id);
@@ -385,9 +385,9 @@ async function finalize(chat, user, s){
 
   if (ADMIN_ID) {
     const digest = `${llm.fit_score ?? "?"} — ${(llm.name || s.name || username)} — ${(llm.roles||[]).slice(0,2).join(",")}`;
-    await tg("sendMessage",{chat_id:ADMIN_ID,text:`Новая анкета: ${digest}`});
+    await tg("sendMessage",{chat_id:ADMIN_ID,text:`yовая анкета: ${digest}`});
   }
-  await tg("sendMessage",{chat_id:chat,text:"✅ Готово! Спасибо. Мы вернёмся с предложением слота."});
+  await tg("sendMessage",{chat_id:chat,text:"✅ готово! спасибо, вернёмся с предложением слота"});
   await delSess(user.id);
 }
 
@@ -408,7 +408,7 @@ function makeNew(){ return newRun(); }
 async function resetFlow(uid,chat){
   const s = newRun();
   await putSess(uid,s);
-  await tg("sendMessage",{chat_id:chat,text:"🔁 Начинаем заново — это новая попытка. Предыдущие ответы сохранятся отдельно при записи в базу."});
+  await tg("sendMessage",{chat_id:chat,text:"🔁 начинаем заново — это новая попытка. предыдущие ответы сохранятся отдельно при записи в базу."});
   await sendWelcome(chat,uid);
 }
 async function continueFlow(uid,chat,s){
