@@ -20,7 +20,7 @@ const NO_CHAT = "я не веду переписку — используй кн
 // --- Q3 Age ---
 const AGE_OPTIONS = ["18–20","21–23","24–26","27–29","30–33","34–37","более 38"];
 
-// --- Q4 Interests (ID + labels для стабильных callback_data) ---
+// --- Q4 Interests (ID + labels) ---
 const INTEREST_ITEMS = [
   { id: "i_backend",  label: "Backend (f.ex: Python/FastAPI/Postgres)" },
   { id: "i_frontend", label: "Frontend (f.ex: React/TS)" },
@@ -109,10 +109,9 @@ const RL_DEFAULT_PER_MIN = 30;  // для остальных действий в
 
 // --- Q7: новые дни и слоты ---
 const TIME_DAYS  = ["понедельник","вторник","среда","четверг"];
-const TIME_SLOTS = ["11:00–13:00","13:00–15:00","15:00–16:00","17:00–19:00"]; // ← добавили первый слот
+const TIME_SLOTS = ["11:00–13:00","13:00–15:00","15:00–16:00","17:00–19:00"];
 
-
-/* ---------------- Redis (Upstash REST) ---------------- */
+/* ---------------- Redis ---------------- */
 function rUrl(path){ if(!REDIS_BASE||!REDIS_TOKEN) throw new Error("Redis env missing"); return new URL(REDIS_BASE+path); }
 async function rGET(path){ const r=await fetch(rUrl(path),{headers:{Authorization:`Bearer ${REDIS_TOKEN}`}}); return r.json(); }
 async function rCall(path,qs){ const u=rUrl(path); if(qs) for(const[k,v]of Object.entries(qs)) u.searchParams.set(k,String(v)); const r=await fetch(u,{headers:{Authorization:`Bearer ${REDIS_TOKEN}`}}); return r.json(); }
@@ -189,12 +188,10 @@ const CONSENT_TEXT = `старт в команде со-основателей: 
 `;
 
 const kbConsent = () => ({
-  inline_keyboard: [
-    [
-      { text: "✅ Согласен", callback_data: "consent_yes" },
-      { text: "❌ Не сейчас", callback_data: "consent_no"  }
-    ]
-  ]
+  inline_keyboard: [[
+    { text: "✅ Согласен", callback_data: "consent_yes" },
+    { text: "❌ Не сейчас", callback_data: "consent_no"  }
+  ]]
 });
 const kbContinueReset = () => ({ inline_keyboard:[[ {text:"▶️ Продолжить",callback_data:"continue"}, {text:"🔁 Начать заново",callback_data:"reset_start"} ]]});
 const kbName = () => ({ inline_keyboard: [[{ text: "🔁 Начать заново", callback_data: "reset_start" }]] });
@@ -466,13 +463,7 @@ async function onMessage(m){
   // about -> time
   if (s.step==="about"){ s.about=text.slice(0,1200); s.step="time"; await putSess(uid,s); await sendTime(chat,s); return; }
 
-  // После ГОТОВО: принимаем конкретные слоты текстом и завершаем, если выбраны день и слот
-  if (s.step==="time" && (s.time_days?.length) && (s.time_slots?.length)){
-    s.specific_slots_text = text.slice(0,300);
-    await putSess(uid,s);
-    await finalize(chat,m.from,s);
-    return;
-  }
+  // После ГОТОВО мы больше не ждём текст: финализация идёт в onCallback(q7:done)
 
   // Q4: свой вариант
   if (s.step === "interests" && text && !text.startsWith("/")) {
@@ -503,11 +494,10 @@ async function onCallback(q) {
   const answerCb = (text = "", alert = false) =>
     tg("answerCallbackQuery", { callback_query_id: q.id, text, show_alert: alert });
 
-  // быстрый лимит для частых тогглов
   const isToggle =
     data.startsWith("q3id:") || data.startsWith("q4id:") ||
     data.startsWith("q7d:")  || data.startsWith("q7s:");
-  const tooFast  = await overRL(uid, isToggle ? RL_TOGGLE_PER_MIN : RL_DEFAULT_PER_MIN);
+  const tooFast  = await overRL(uid, isToggle ? 120 : 30);
   if (tooFast) { await answerCb("Слишком часто. Секунду…"); return; }
 
   const chat = q.message.chat.id;
@@ -515,11 +505,9 @@ async function onCallback(q) {
 
   let s = await getSess(uid);
 
-  // Навигация
   if (data === "continue")     { await continueFlow(uid, chat, s); await answerCb(); return; }
   if (data === "reset_start")  { await resetFlow(uid, chat);       await answerCb(); return; }
 
-  // Согласие
   if (data === "consent_yes") {
     if (s.step !== "consent") { await answerCb(); return; }
     s.consent = "yes"; s.step = "name";
@@ -537,7 +525,6 @@ async function onCallback(q) {
     return;
   }
 
-  // Возраст
   if (data.startsWith("age:")) {
     if (s.step !== "age") { await answerCb(); return; }
     s.age  = data.split(":")[1];
@@ -548,7 +535,7 @@ async function onCallback(q) {
     return;
   }
 
-  // Q4: interests toggle + лимит
+  // Q4
   if (data.startsWith("q3id:")) {
     if (s.step !== "interests") { await answerCb(); return; }
     const id    = data.slice(5);
@@ -571,20 +558,14 @@ async function onCallback(q) {
     await answerCb();
     return;
   }
-
-  // Q4: NEXT
   if (data.startsWith("q3:")) {
     if (s.step !== "interests") { await answerCb(); return; }
-    if (data === "q3:next") {
-      s.step = "stack";
-      await putSess(uid, s);
-      await sendStack(chat, uid, s);
-    }
+    if (data === "q3:next") { s.step = "stack"; await putSess(uid, s); await sendStack(chat, uid, s); }
     await answerCb();
     return;
   }
 
-  // Q5: stack toggle + лимит
+  // Q5
   if (data.startsWith("q4id:")) {
     if (s.step !== "stack") { await answerCb(); return; }
     const id    = data.slice(5);
@@ -607,15 +588,9 @@ async function onCallback(q) {
     await answerCb();
     return;
   }
-
-  // Q5: NEXT
   if (data.startsWith("q4:")) {
     if (s.step !== "stack") { await answerCb(); return; }
-    if (data === "q4:next") {
-      s.step = "a1";
-      await putSess(uid, s);
-      await sendA1(chat);
-    }
+    if (data === "q4:next") { s.step = "a1"; await putSess(uid, s); await sendA1(chat); }
     await answerCb();
     return;
   }
@@ -625,7 +600,7 @@ async function onCallback(q) {
   if (data.startsWith("a2:")) { if (s.step !== "a2") { await answerCb(); return; } s.a2 = data.split(":")[1]; s.step = "a3"; await putSess(uid, s); await sendA3(chat); await answerCb(); return; }
   if (data.startsWith("a3:")) { if (s.step !== "a3") { await answerCb(); return; } s.a3 = data.split(":")[1]; s.step = "about"; await putSess(uid, s); await sendAbout(chat); await answerCb(); return; }
 
-  // Q7: время — toggles по дням и слотам + GOТОВО
+  // Q7: дни/слоты и ГОТОВО
   if (data.startsWith("q7d:")) {
     if (s.step !== "time") { await answerCb(); return; }
     const day = data.slice(4);
@@ -651,7 +626,8 @@ async function onCallback(q) {
       await answerCb();
       return;
     }
-    await tg("sendMessage", { chat_id: chat, text: "Опционально: напиши 2–3 конкретных слота (или «-» для пропуска)." });
+    // финал напрямую
+    await finalize(chat, { id: uid, username: q.from.username }, s);
     await answerCb();
     return;
   }
