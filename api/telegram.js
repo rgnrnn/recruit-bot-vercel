@@ -2,6 +2,8 @@
 // Полный поток: Q1 consent -> Q2 name -> Age -> Q4 interests (multi) -> Q5 stack (multi)
 // -> A1/A2/A3 -> about (text) -> time (days + slots) -> FINAL (LLM + Sheets)
 
+import { handleAdminCommand } from "./admin-commands.js";
+
 const TOKEN        = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID     = process.env.ADMIN_CHAT_ID || "";
 const START_SECRET = process.env.START_SECRET || "";
