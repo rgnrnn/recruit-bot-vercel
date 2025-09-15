@@ -15,7 +15,7 @@ const SHEETS_SECRET= process.env.SHEETS_WEBHOOK_SECRET || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL   = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-const NO_CHAT = "Я не веду переписку — используй кнопки ниже";
+const NO_CHAT = "я не веду переписку — используй кнопки ниже";
 
 // --- Q3 Age ---
 const AGE_OPTIONS = ["18–20","21–23","24–26","27–29","30–33","34–37","более 38"];
@@ -94,9 +94,9 @@ const STACK_LABEL_BY_ID = Object.fromEntries(STACK_ITEMS.map(x => [x.id, x.label
 // Резерв старых констант (не используются, можно удалить при желании)
 const A_INTERESTS = ["Backend","Graph/Neo4j","Vector/LLM","Frontend","DevOps/MLOps","Data/ETL","Product/Coordination"];
 const A_STACK     = ["Python/FastAPI","PostgreSQL/SQL","Neo4j","pgvector","LangChain/LangGraph","React/TS","Docker/K8s/Linux","CI/GitHub"];
-const A1 = ["Быстро прототипирую","Проектирую основательно","Исследую гипотезы","Синхронизирую людей"];
-const A2 = ["MVP важнее идеала","Полирую до совершенства"];
-const A3 = ["Риск/скорость","Надёжность/предсказуемость"];
+const A1 = ["быстро прототипирую","проектирую основательно","исследую гипотезы","синхронизирую людей"];
+const A2 = ["MVP важнее идеала","полирую до совершенства"];
+const A3 = ["риск/скорость","надёжность/предсказуемость"];
 const TIME_WINDOWS = ["будни утро","будни день","будни вечер","выходные утро","выходные день","выходные вечер"]; // legacy only
 
 // Лимиты мультивыбора
@@ -285,7 +285,7 @@ async function sendAbout(chat){ await tg("sendMessage",{chat_id:chat,text:"9) н
 async function sendTime(chat, sess){
   await tg("sendMessage",{
     chat_id: chat,
-    text: "10) отметь дни и временные слоты (мультивыбор). затем нажми «ГОТОВО».",
+    text: "отметь дни и временные слоты, когда тебе удобно переговорить/встретиться (мультивыбор). затем нажми «ГОТОВО»",
     parse_mode: "HTML",
     reply_markup: kbTimeDaysSlots(sess)
   });
