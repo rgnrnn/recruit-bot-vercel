@@ -109,7 +109,8 @@ const RL_DEFAULT_PER_MIN = 30;  // для остальных действий в
 
 // --- Q7: новые дни и слоты ---
 const TIME_DAYS  = ["понедельник","вторник","среда","четверг"];
-const TIME_SLOTS = ["13:00–15:00","15:00–16:00","17:00–19:00"];
+const TIME_SLOTS = ["11:00–13:00","13:00–15:00","15:00–16:00","17:00–19:00"]; // ← добавили первый слот
+
 
 /* ---------------- Redis (Upstash REST) ---------------- */
 function rUrl(path){ if(!REDIS_BASE||!REDIS_TOKEN) throw new Error("Redis env missing"); return new URL(REDIS_BASE+path); }
@@ -503,7 +504,9 @@ async function onCallback(q) {
     tg("answerCallbackQuery", { callback_query_id: q.id, text, show_alert: alert });
 
   // быстрый лимит для частых тогглов
-  const isToggle = data.startsWith("q3id:") || data.startsWith("q4id:") || data.startsWith("q7d:") || data.startsWith("q7s:");
+  const isToggle =
+    data.startsWith("q3id:") || data.startsWith("q4id:") ||
+    data.startsWith("q7d:")  || data.startsWith("q7s:");
   const tooFast  = await overRL(uid, isToggle ? RL_TOGGLE_PER_MIN : RL_DEFAULT_PER_MIN);
   if (tooFast) { await answerCb("Слишком часто. Секунду…"); return; }
 
