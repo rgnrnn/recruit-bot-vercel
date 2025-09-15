@@ -85,13 +85,13 @@ const STACK_PAIRS = [
   ["s_docker_k8s_lin","s_ci_cd"],
   ["s_kafka","s_redis_rabbit"],
   ["s_airflow_dbt","s_terraform"],
-  ["s_nginx_traefik","s_observability"],
+  ["s_nginx_traефik","s_observability"],
   ["s_testing","s_security"],
   ["s_cloud","s_distributed"],
 ];
 const STACK_LABEL_BY_ID = Object.fromEntries(STACK_ITEMS.map(x => [x.id, x.label]));
 
-// Резерв старых констант (не используются, можно удалить при желании)
+// резерв старых констант (не используются)
 const A_INTERESTS = ["Backend","Graph/Neo4j","Vector/LLM","Frontend","DevOps/MLOps","Data/ETL","Product/Coordination"];
 const A_STACK     = ["Python/FastAPI","PostgreSQL/SQL","Neo4j","pgvector","LangChain/LangGraph","React/TS","Docker/K8s/Linux","CI/GitHub"];
 const A1 = ["быстро прототипирую","проектирую основательно","исследую гипотезы","синхронизирую людей"];
@@ -103,11 +103,11 @@ const TIME_WINDOWS = ["будни утро","будни день","будни в
 const MAX_INTERESTS = 7;
 const MAX_STACK     = 7;
 
-// Rate-limit для callback'ов (кликов по чекбоксам), в минуту
-const RL_TOGGLE_PER_MIN  = 120; // для q3id:/q4id:/q7d:/q7s:
-const RL_DEFAULT_PER_MIN = 30;  // для остальных действий в onCallback
+// Rate-limit для callback'ов
+const RL_TOGGLE_PER_MIN  = 120; // q3id:/q4id:/q7d:/q7s:
+const RL_DEFAULT_PER_MIN = 30;
 
-// --- Q7: новые дни и слоты ---
+// --- Q7: дни и слоты ---
 const TIME_DAYS  = ["понедельник","вторник","среда","четверг"];
 const TIME_SLOTS = ["11:00–13:00","13:00–15:00","15:00–16:00","17:00–19:00"];
 
@@ -135,10 +135,8 @@ function newRun(){
     other_stack:[],
     a1:"", a2:"", a3:"",
     about:"",
-    // новый формат времени:
     time_days:[],
     time_slots:[],
-    // legacy-поля
     time_zone:"",
     time_windows:[],
     specific_slots_text:"",
@@ -226,7 +224,6 @@ function kbStack(selectedLabels) {
   return { inline_keyboard: rows };
 }
 
-// Новая раскладка времени: левый столбец — дни, правый — слоты
 function kbTimeDaysSlots(sess){
   const rows = [];
   const selDays  = sess.time_days  || [];
@@ -460,12 +457,10 @@ async function onMessage(m){
     return;
   }
 
-  // about -> time
   if (s.step==="about"){ s.about=text.slice(0,1200); s.step="time"; await putSess(uid,s); await sendTime(chat,s); return; }
 
-  // После ГОТОВО мы больше не ждём текст: финализация идёт в onCallback(q7:done)
+  // после ГОТОВО финализация идёт в onCallback(q7:done)
 
-  // Q4: свой вариант
   if (s.step === "interests" && text && !text.startsWith("/")) {
     s.other_interests = s.other_interests || [];
     if (s.other_interests.length < 5) s.other_interests.push(text.slice(0, 120));
@@ -474,7 +469,6 @@ async function onMessage(m){
     return;
   }
 
-  // Q5: свой инструмент
   if (s.step === "stack" && text && !text.startsWith("/")) {
     s.other_stack = s.other_stack || [];
     if (s.other_stack.length < 5) s.other_stack.push(text.slice(0, 120));
