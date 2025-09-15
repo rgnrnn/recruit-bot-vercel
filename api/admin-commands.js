@@ -54,10 +54,18 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     const csv = await callWriter("export_csv", {}, true);
     const fd = new FormData();
     fd.append("chat_id", String(chat));
-    fd.append("document", new Blob([csv], { type: "text/csv" }), "recruits.csv");
-    await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
+    fd.append(
+      "document",
+      new Blob([csv], { type: "text/csv; charset=utf-8" }), // ← добавили charset
+      "recruits.csv"
+    );
+    await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
+      method: "POST",
+      body: fd
+    });
     return true;
   }
+
 
   // /today
   if (lc.startsWith("/today")) {
