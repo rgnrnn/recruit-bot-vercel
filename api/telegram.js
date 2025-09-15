@@ -1,6 +1,6 @@
 // api/telegram.js — Telegram webhook (Vercel, Node 20, ESM)
 // Полный поток: Q1 consent -> Q2 name -> Age -> Q4 interests (multi) -> Q5 stack (multi)
-// -> A1/A2/A3 -> about (text) -> time zone + windows + slots -> FINAL (LLM + Sheets)
+// -> A1/A2/A3 -> about (text) -> time (days + slots) -> FINAL (LLM + Sheets)
 
 const TOKEN        = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID     = process.env.ADMIN_CHAT_ID || "";
@@ -97,15 +97,19 @@ const A_STACK     = ["Python/FastAPI","PostgreSQL/SQL","Neo4j","pgvector","LangC
 const A1 = ["Быстро прототипирую","Проектирую основательно","Исследую гипотезы","Синхронизирую людей"];
 const A2 = ["MVP важнее идеала","Полирую до совершенства"];
 const A3 = ["Риск/скорость","Надёжность/предсказуемость"];
-const TIME_WINDOWS = ["будни утро","будни день","будни вечер","выходные утро","выходные день","выходные вечер"];
+const TIME_WINDOWS = ["будни утро","будни день","будни вечер","выходные утро","выходные день","выходные вечер"]; // legacy only
 
 // Лимиты мультивыбора
 const MAX_INTERESTS = 7;
 const MAX_STACK     = 7;
 
 // Rate-limit для callback'ов (кликов по чекбоксам), в минуту
-const RL_TOGGLE_PER_MIN  = 120; // для q3id:/q4id:
+const RL_TOGGLE_PER_MIN  = 120; // для q3id:/q4id:/q7d:/q7s:
 const RL_DEFAULT_PER_MIN = 30;  // для остальных действий в onCallback
+
+// --- Q7: новые дни и слоты ---
+const TIME_DAYS  = ["понедельник","вторник","среда","четверг"];
+const TIME_SLOTS = ["13:00–15:00","15:00–16:00","17:00–19:00"];
 
 /* ---------------- Redis (Upstash REST) ---------------- */
 function rUrl(path){ if(!REDIS_BASE||!REDIS_TOKEN) throw new Error("Redis env missing"); return new URL(REDIS_BASE+path); }
@@ -130,7 +134,14 @@ function newRun(){
     stack:[],
     other_stack:[],
     a1:"", a2:"", a3:"",
-    about:"", time_zone:"", time_windows:[], specific_slots_text:"",
+    about:"",
+    // новый формат времени:
+    time_days:[],
+    time_slots:[],
+    // legacy-поля
+    time_zone:"",
+    time_windows:[],
+    specific_slots_text:"",
     llm:{}
   };
 }
@@ -140,6 +151,8 @@ async function getSess(uid){
     let s; try{s=JSON.parse(j.result);}catch{return newRun();}
     if(!Array.isArray(s.interests)) s.interests=[];
     if(!Array.isArray(s.stack)) s.stack=[];
+    if(!Array.isArray(s.time_days)) s.time_days=[];
+    if(!Array.isArray(s.time_slots)) s.time_slots=[];
     if(!Array.isArray(s.time_windows)) s.time_windows=[];
     if(!s.run_id) s.run_id = newRun().run_id;
     if(!s.started_at) s.started_at = new Date().toISOString();
@@ -214,13 +227,27 @@ function kbStack(selectedLabels) {
   rows.push([{ text: "🔁 Начать заново", callback_data: "reset_start" }]);
   return { inline_keyboard: rows };
 }
-function kbTime(sess){
-  const rows = [
-    [{text:"TZ: Europe/Moscow",callback_data:"q7tz:Europe/Moscow"},{text:"TZ: Europe/Amsterdam",callback_data:"q7tz:Europe/Amsterdam"}],
-    ...TIME_WINDOWS.map(w=>[{text:`${sess.time_windows.includes(w)?"☑️":"⬜️"} ${w}`,callback_data:`q7w:${w}`}]),
-    [{text:"Готово ➜",callback_data:"q7w:done"}],
-    [{text:"🔁 Начать заново",callback_data:"reset_start"}],
-  ];
+
+// Новая раскладка времени: левый столбец — дни, правый — слоты
+function kbTimeDaysSlots(sess){
+  const rows = [];
+  const selDays  = sess.time_days  || [];
+  const selSlots = sess.time_slots || [];
+  const maxRows = Math.max(TIME_DAYS.length, TIME_SLOTS.length);
+  for (let i=0;i<maxRows;i++){
+    const r = [];
+    if (i < TIME_DAYS.length) {
+      const d = TIME_DAYS[i];
+      r.push({ text: `${selDays.includes(d) ? "☑️" : "⬜️"} ${d}`, callback_data: `q7d:${d}` });
+    }
+    if (i < TIME_SLOTS.length) {
+      const s = TIME_SLOTS[i];
+      r.push({ text: `${selSlots.includes(s) ? "☑️" : "⬜️"} ${s}`, callback_data: `q7s:${s}` });
+    }
+    rows.push(r);
+  }
+  rows.push([{ text: "🟢 ГОТОВО ➜", callback_data: "q7:done" }]);
+  rows.push([{ text: "🔁 Начать заново", callback_data: "reset_start" }]);
   return { inline_keyboard: rows };
 }
 
@@ -254,7 +281,14 @@ async function sendA1(chat){ await tg("sendMessage",{chat_id:chat,text:"6) чт�
 async function sendA2(chat){ await tg("sendMessage",{chat_id:chat,text:"7) что важнее? выбери вариант",reply_markup:kbSingle("a2",A2)}); }
 async function sendA3(chat){ await tg("sendMessage",{chat_id:chat,text:"8) что предпочитаешь? выбери вариант",reply_markup:kbSingle("a3",A3)}); }
 async function sendAbout(chat){ await tg("sendMessage",{chat_id:chat,text:"9) несколько строк о себе. что ценного сделал(а) за год? 1–2 кейса, роли/стек, ссылка на гит/резюме/пет-проекты"}); }
-async function sendTime(chat, sess){ await tg("sendMessage",{chat_id:chat,text:"укажи удобные окна (мультивыбор) для встречи/переговоров. Затем «Готово»",reply_markup:kbTime(sess)}); }
+async function sendTime(chat, sess){
+  await tg("sendMessage",{
+    chat_id: chat,
+    text: "10) отметь дни и временные слоты (мультивыбор). затем нажми «ГОТОВО».",
+    parse_mode: "HTML",
+    reply_markup: kbTimeDaysSlots(sess)
+  });
+}
 
 /* ---------------- Finalize ---------------- */
 async function runLLM(u, s){
@@ -265,8 +299,8 @@ async function runLLM(u, s){
     stack_hint: s.stack,
     work_style_raw: {a1:s.a1,a2:s.a2,a3:s.a3},
     about: s.about,
-    time_zone: s.time_zone,
-    time_windows: s.time_windows,
+    time_zone: "",
+    time_windows: { days: s.time_days, slots: s.time_slots },
     specific_slots_text: s.specific_slots_text
   };
   if (!OPENAI_API_KEY) {
@@ -275,9 +309,13 @@ async function runLLM(u, s){
       roles: (s.interests||[]).slice(0,2).map(x=>x.toLowerCase().includes("graph")?"graph":x.toLowerCase().includes("vector")?"vector":x.toLowerCase().includes("devops")?"devops":"backend"),
       stack: (s.stack||[]).slice(0,3),
       work_style: {builder:0.6,architect:0.2,researcher:0.1,operator:0.1,integrator:0.2},
-      fit_score: 65, time_commitment: s.time_windows.length>=3?"11–20ч":s.time_windows.length>=2?"6–10ч":"≤5ч",
-      time_zone: s.time_zone||"UTC", time_windows: s.time_windows,
-      specific_slots_text: s.specific_slots_text || "", links: [],
+      fit_score: 65,
+      time_commitment: ((s.time_days?.length || 0) + (s.time_slots?.length || 0)) >= 5 ? "11–20ч" :
+                       ((s.time_days?.length || 0) + (s.time_slots?.length || 0)) >= 3 ? "6–10ч" : "≤5ч",
+      time_zone: "",
+      time_windows: base.time_windows,
+      specific_slots_text: s.specific_slots_text || "",
+      links: [],
       summary: "Стабильный кандидат. Подходит на бэкенд/интеграции."
     };
   }
@@ -334,7 +372,9 @@ async function finalize(chat, user, s){
     s.consent, s.name,
     JSON.stringify(s.interests), JSON.stringify(s.stack),
     s.a1, s.a2, s.a3, s.about,
-    s.time_zone, JSON.stringify(s.time_windows), s.specific_slots_text || "",
+    JSON.stringify(""), // legacy time_zone
+    JSON.stringify({ days: s.time_days || [], slots: s.time_slots || [] }), // time_windows
+    s.specific_slots_text || "",
     JSON.stringify(llm),
     llm.fit_score || "",
     JSON.stringify(llm.roles || []),
@@ -422,9 +462,16 @@ async function onMessage(m){
     return;
   }
 
-  // Q6 about -> Q7 time
+  // about -> time
   if (s.step==="about"){ s.about=text.slice(0,1200); s.step="time"; await putSess(uid,s); await sendTime(chat,s); return; }
-  if (s.step==="time" && s.time_zone && s.time_windows.length){ s.specific_slots_text=text.slice(0,300); await putSess(uid,s); await finalize(chat,m.from,s); return; }
+
+  // После ГОТОВО: принимаем конкретные слоты текстом и завершаем, если выбраны день и слот
+  if (s.step==="time" && (s.time_days?.length) && (s.time_slots?.length)){
+    s.specific_slots_text = text.slice(0,300);
+    await putSess(uid,s);
+    await finalize(chat,m.from,s);
+    return;
+  }
 
   // Q4: свой вариант
   if (s.step === "interests" && text && !text.startsWith("/")) {
@@ -452,12 +499,11 @@ async function onCallback(q) {
   const uid  = q.from.id;
   const data = q.data || "";
 
-  // helper для ответа на callback
   const answerCb = (text = "", alert = false) =>
     tg("answerCallbackQuery", { callback_query_id: q.id, text, show_alert: alert });
 
-  // отдельный rate-limit для тогглов чекбоксов (много быстрых кликов)
-  const isToggle = data.startsWith("q3id:") || data.startsWith("q4id:");
+  // быстрый лимит для частых тогглов
+  const isToggle = data.startsWith("q3id:") || data.startsWith("q4id:") || data.startsWith("q7d:") || data.startsWith("q7s:");
   const tooFast  = await overRL(uid, isToggle ? RL_TOGGLE_PER_MIN : RL_DEFAULT_PER_MIN);
   if (tooFast) { await answerCb("Слишком часто. Секунду…"); return; }
 
@@ -499,7 +545,7 @@ async function onCallback(q) {
     return;
   }
 
-  // Q4: interests toggle by ID + лимит
+  // Q4: interests toggle + лимит
   if (data.startsWith("q3id:")) {
     if (s.step !== "interests") { await answerCb(); return; }
     const id    = data.slice(5);
@@ -535,7 +581,7 @@ async function onCallback(q) {
     return;
   }
 
-  // Q5: stack toggle by ID + лимит
+  // Q5: stack toggle + лимит
   if (data.startsWith("q4id:")) {
     if (s.step !== "stack") { await answerCb(); return; }
     const id    = data.slice(5);
@@ -576,31 +622,33 @@ async function onCallback(q) {
   if (data.startsWith("a2:")) { if (s.step !== "a2") { await answerCb(); return; } s.a2 = data.split(":")[1]; s.step = "a3"; await putSess(uid, s); await sendA3(chat); await answerCb(); return; }
   if (data.startsWith("a3:")) { if (s.step !== "a3") { await answerCb(); return; } s.a3 = data.split(":")[1]; s.step = "about"; await putSess(uid, s); await sendAbout(chat); await answerCb(); return; }
 
-  // Q7: time windows
-  if (data.startsWith("q7w:")) {
+  // Q7: время — toggles по дням и слотам + GOТОВО
+  if (data.startsWith("q7d:")) {
     if (s.step !== "time") { await answerCb(); return; }
-    const opt = data.split(":")[1];
-    if (opt === "done") {
-      if (!s.time_zone || !s.time_windows.length) {
-        await tg("sendMessage", { chat_id: chat, text: "Укажи часовой пояс и хотя бы одно окно времени." });
-        await answerCb();
-        return;
-      }
-      await tg("sendMessage", { chat_id: chat, text: "Опционально: напиши 2–3 конкретных слота (или «-» для пропуска)." });
-      await answerCb();
-      return;
-    }
-    toggle(s.time_windows, opt);
+    const day = data.slice(4);
+    toggle(s.time_days, day);
     await putSess(uid, s);
-    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbTime(s) });
+    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbTimeDaysSlots(s) });
     await answerCb();
     return;
   }
-  if (data.startsWith("q7tz:")) {
+  if (data.startsWith("q7s:")) {
     if (s.step !== "time") { await answerCb(); return; }
-    s.time_zone = data.split(":")[1];
+    const slot = data.slice(4);
+    toggle(s.time_slots, slot);
     await putSess(uid, s);
-    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbTime(s) });
+    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbTimeDaysSlots(s) });
+    await answerCb();
+    return;
+  }
+  if (data === "q7:done") {
+    if (s.step !== "time") { await answerCb(); return; }
+    if (!(s.time_days?.length) || !(s.time_slots?.length)) {
+      await tg("sendMessage", { chat_id: chat, text: "Отметь хотя бы один день и один временной слот." });
+      await answerCb();
+      return;
+    }
+    await tg("sendMessage", { chat_id: chat, text: "Опционально: напиши 2–3 конкретных слота (или «-» для пропуска)." });
     await answerCb();
     return;
   }
