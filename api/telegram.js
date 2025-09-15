@@ -254,7 +254,7 @@ async function sendA1(chat){ await tg("sendMessage",{chat_id:chat,text:"6) чт�
 async function sendA2(chat){ await tg("sendMessage",{chat_id:chat,text:"7) что важнее? выбери вариант",reply_markup:kbSingle("a2",A2)}); }
 async function sendA3(chat){ await tg("sendMessage",{chat_id:chat,text:"8) что предпочитаешь? выбери вариант",reply_markup:kbSingle("a3",A3)}); }
 async function sendAbout(chat){ await tg("sendMessage",{chat_id:chat,text:"9) несколько строк о себе. что ценного сделал(а) за год? 1–2 кейса, роли/стек, ссылка на гит/резюме/пет-проекты"}); }
-async function sendTime(chat, sess){ await tg("sendMessage",{chat_id:chat,text:"7) укажи удобные окна (мультивыбор) для встречи/переговоров. Затем «Готово»",reply_markup:kbTime(sess)}); }
+async function sendTime(chat, sess){ await tg("sendMessage",{chat_id:chat,text:"укажи удобные окна (мультивыбор) для встречи/переговоров. Затем «Готово»",reply_markup:kbTime(sess)}); }
 
 /* ---------------- Finalize ---------------- */
 async function runLLM(u, s){
