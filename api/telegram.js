@@ -87,7 +87,7 @@ const STACK_PAIRS = [
   ["s_docker_k8s_lin","s_ci_cd"],
   ["s_kafka","s_redis_rabbit"],
   ["s_airflow_dbt","s_terraform"],
-  ["s_nginx_traефik","s_observability"],
+  ["s_nginx_traefik","s_observability"],
   ["s_testing","s_security"],
   ["s_cloud","s_distributed"],
 ];
@@ -226,6 +226,7 @@ function kbStack(selectedLabels) {
   return { inline_keyboard: rows };
 }
 
+// Новая раскладка времени: левый столбец — дни, правый — слоты
 function kbTimeDaysSlots(sess){
   const rows = [];
   const selDays  = sess.time_days  || [];
@@ -347,50 +348,15 @@ async function appendSheets(row){
   return res;
 }
 
+// (оставлен на всякий случай; /digest теперь делает admin-commands.js)
 async function cmdDigest(chat){
   if (!SHEETS_URL || !SHEETS_SECRET) { await tg("sendMessage",{chat_id:chat,text:"/digest недоступен: не настроен Sheets writer."}); return; }
   const j = await fetch(SHEETS_URL, {
     method:"POST", headers:{ "content-type":"application/json" },
     body: JSON.stringify({ secret: SHEETS_SECRET, op:"digest" })
   }).then(x=>x.json()).catch(()=>null);
-  if (j?.ok && j.digest) await tg("sendMessage",{chat_id:chat,text:j.digest,parse_mode:"Markdown"});
+  if (j?.ok && j.digest) await tg("sendMessage",{chat_id:chat,text:j.digest}); // без Markdown
   else await tg("sendMessage",{chat_id:chat,text:"/digest: нет данных или ошибка."});
-}
-
-async function finalize(chat, user, s){
-  await tg("sendMessage",{chat_id:chat,text:"⏳ cекунда, готовлю сводку…"});
-  const llm = await runLLM(user, s) || {};
-  s.llm = llm;
-  const username = user.username ? "@"+user.username : String(user.id);
-  const row = [
-    new Date().toISOString(),
-    s.run_id, s.started_at,
-    username, String(user.id),
-    s.consent, s.name,
-    JSON.stringify(s.interests), JSON.stringify(s.stack),
-    s.a1, s.a2, s.a3, s.about,
-    JSON.stringify(""), // legacy time_zone
-    JSON.stringify({ days: s.time_days || [], slots: s.time_slots || [] }), // time_windows
-    s.specific_slots_text || "",
-    JSON.stringify(llm),
-    llm.fit_score || "",
-    JSON.stringify(llm.roles || []),
-    JSON.stringify(llm.stack || []),
-    JSON.stringify(llm.work_style || {}),
-    llm.time_commitment || "",
-    JSON.stringify(llm.links || []),
-    llm.summary || ""
-  ];
-
-  const wr = await appendSheets(row);
-  console.log("sheets_append_result:", wr);
-
-  if (ADMIN_ID) {
-    const digest = `${llm.fit_score ?? "?"} — ${(llm.name || s.name || username)} — ${(llm.roles||[]).slice(0,2).join(",")}`;
-    await tg("sendMessage",{chat_id:ADMIN_ID,text:`новая анкета: ${digest}`});
-  }
-  await tg("sendMessage",{chat_id:chat,text:"✅ готово! спасибо, вернёмся с предложением слота"});
-  await delSess(user.id);
 }
 
 /* ---------------- Entry ---------------- */
@@ -428,36 +394,32 @@ async function continueFlow(uid,chat,s){
 
 /* ---------------- Handlers ---------------- */
 async function onMessage(m){
-  const uid=m.from.id; if(await overRL(uid)) return;
-  const chat=m.chat.id; const text=(m.text||"").trim();
+  const uid  = m.from.id; if(await overRL(uid)) return;
+  const chat = m.chat.id;
+  const text = (m.text || "").trim();
 
-  if (text.toLowerCase()==="/ping"){ await tg("sendMessage",{chat_id:chat,text:"pong ✅"}); return; }
-  if (text.toLowerCase()==="/reset" || text.toLowerCase()==="заново"){ await resetFlow(uid,chat); return; }
-  if (text.toLowerCase()==="/digest" && String(uid)===String(ADMIN_ID)){ await cmdDigest(chat); return; }
-
-  if (text.startsWith("/start")){
-    const payload = text.split(" ").slice(1).join(" ").trim();
-    const hasSecret = payload && START_SECRET && payload.includes(START_SECRET);
-    if (REQUIRE_SEC && !hasSecret && String(uid)!==String(ADMIN_ID)){
-      await tg("sendMessage",{chat_id:chat,text:`Нужен ключ доступа. Открой ссылку:\nhttps://t.me/rgnr_assistant_bot?start=${encodeURIComponent(START_SECRET||"INVITE")}`});
-      return;
-    }
-
-
-  // Админ-команды (/help, /export, /today, /stats, /who, /find, /slots)
+  // админ-команды — обрабатываем ПЕРВЫМИ
   if (text.startsWith("/")) {
     const handled = await handleAdminCommand({ text, uid, chat }, tg);
     if (handled) return;
   }
 
+  if (text.toLowerCase()==="/ping"){ await tg("sendMessage",{chat_id:chat,text:"pong ✅"}); return; }
+  if (text.toLowerCase()==="/reset" || text.toLowerCase()==="заново"){ await resetFlow(uid,chat); return; }
 
-    
+  if (text.startsWith("/start")){
+    const payload   = text.split(" ").slice(1).join(" ").trim();
+    const hasSecret = payload && START_SECRET && payload.includes(START_SECRET);
+    if (REQUIRE_SEC && !hasSecret && String(uid)!==String(ADMIN_ID)){
+      await tg("sendMessage",{chat_id:chat,text:`Нужен ключ доступа. Открой ссылку:\nhttps://t.me/rgnr_assistant_bot?start=${encodeURIComponent(START_SECRET||"INVITE")}`});
+      return;
+    }
     const s=await getSess(uid);
     if (s.step && s.step!=="consent"){
       await tg("sendMessage",{chat_id:chat,text:"Анкета уже начата — продолжать или начать заново?",reply_markup:kbContinueReset()});
       return;
     }
-    const s2=makeNew(); await putSess(uid,s2); await sendWelcome(chat,uid); return;
+    const s2 = makeNew(); await putSess(uid,s2); await sendWelcome(chat,uid); return;
   }
 
   const s=await getSess(uid);
