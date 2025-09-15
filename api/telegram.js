@@ -442,6 +442,16 @@ async function onMessage(m){
       await tg("sendMessage",{chat_id:chat,text:`Нужен ключ доступа. Открой ссылку:\nhttps://t.me/rgnr_assistant_bot?start=${encodeURIComponent(START_SECRET||"INVITE")}`});
       return;
     }
+
+
+  // Админ-команды (/help, /export, /today, /stats, /who, /find, /slots)
+  if (text.startsWith("/")) {
+    const handled = await handleAdminCommand({ text, uid, chat }, tg);
+    if (handled) return;
+  }
+
+
+    
     const s=await getSess(uid);
     if (s.step && s.step!=="consent"){
       await tg("sendMessage",{chat_id:chat,text:"Анкета уже начата — продолжать или начать заново?",reply_markup:kbContinueReset()});
