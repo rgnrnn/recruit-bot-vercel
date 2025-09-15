@@ -229,7 +229,7 @@ async function sendWelcome(chat, uid) {
   await tg("sendMessage", { chat_id: chat, text: CONSENT_TEXT, parse_mode: "HTML", reply_markup: kbConsent() });
 }
 async function sendName(chat, uid) {
-  await tg("sendMessage", { chat_id: chat, text: "2) Как к тебе обращаться? Введи имя текстом.", parse_mode: "HTML", reply_markup: kbName() });
+  await tg("sendMessage", { chat_id: chat, text: "2) Как к тебе обращаться? Введи имя текстом", parse_mode: "HTML", reply_markup: kbName() });
 }
 async function sendAge(chat, uid, s) {
   await tg("sendMessage", { chat_id: chat, text: "3) Укажи возраст:", parse_mode: "HTML", reply_markup: kbSingle("age", AGE_OPTIONS) });
@@ -237,7 +237,7 @@ async function sendAge(chat, uid, s) {
 async function sendInterests(chat, uid, s) {
   await tg("sendMessage", {
     chat_id: chat,
-    text: "4) Что реально драйвит в последние 12 месяцев?\nОтметь 2–7 направлений (чекбоксы). Можно дополнить своим вариантом обычным сообщением.",
+    text: "4) Что реально драйвит в последние 12 месяцев?\nОтметь 2–7 направлений (чекбоксы). Можно дополнить своим вариантом обычным сообщением",
     parse_mode: "HTML",
     reply_markup: kbInterests(s.interests || [])
   });
@@ -245,15 +245,15 @@ async function sendInterests(chat, uid, s) {
 async function sendStack(chat, uid, s){
   await tg("sendMessage", {
     chat_id: chat,
-    text: "5) Где тебе «можно доверить прод». \nОтметь 2–7 пунктов (чекбоксы). Свой инструмент можно дописать сообщением.",
+    text: "5) Где тебе «можно доверить прод». \nОтметь 2–7 пунктов (чекбоксы). Свой инструмент можно дописать сообщением",
     parse_mode: "HTML",
     reply_markup: kbStack(s.stack || [])
   });
 }
-async function sendA1(chat){ await tg("sendMessage",{chat_id:chat,text:"A1) Что ближе по стилю?",reply_markup:kbSingle("a1",A1)}); }
-async function sendA2(chat){ await tg("sendMessage",{chat_id:chat,text:"A2) Что важнее?",reply_markup:kbSingle("a2",A2)}); }
-async function sendA3(chat){ await tg("sendMessage",{chat_id:chat,text:"A3) Что предпочитаешь?",reply_markup:kbSingle("a3",A3)}); }
-async function sendAbout(chat){ await tg("sendMessage",{chat_id:chat,text:"6) 2–5 строк о себе + ссылки (в одном сообщении)."}); }
+async function sendA1(chat){ await tg("sendMessage",{chat_id:chat,text:"6) Что ближе по стилю? Выбери вариант",reply_markup:kbSingle("a1",A1)}); }
+async function sendA2(chat){ await tg("sendMessage",{chat_id:chat,text:"7) Что важнее? Выбери вариант",reply_markup:kbSingle("a2",A2)}); }
+async function sendA3(chat){ await tg("sendMessage",{chat_id:chat,text:"8) Что предпочитаешь? Выбери вариант",reply_markup:kbSingle("a3",A3)}); }
+async function sendAbout(chat){ await tg("sendMessage",{chat_id:chat,text:"9) Несколько строк о себе. Что ценного сделал(а) за год? 1–2 кейса, роли/стек, ссылка на гит/резюме/пет-проекты"}); }
 async function sendTime(chat, sess){ await tg("sendMessage",{chat_id:chat,text:"7) Укажи часовой пояс (кнопкой) и удобные окна (мультивыбор). Затем «Готово».",reply_markup:kbTime(sess)}); }
 
 /* ---------------- Finalize ---------------- */
