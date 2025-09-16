@@ -1,5 +1,5 @@
 // api/admin-commands.js
-// Админ-команды: /help /export /today /stats /who /find /slots /digest
+// Админ-команды: /help /export /export_xlsx /today /stats /who /find /slots /digest
 // Требует env: ADMIN_CHAT_ID, SHEETS_WEBHOOK_URL, SHEETS_WEBHOOK_SECRET, TELEGRAM_BOT_TOKEN
 
 const ADMIN_ID = String(process.env.ADMIN_CHAT_ID || "");
@@ -39,6 +39,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
 `Команды админа:
 /help — список команд
 /export — выгрузка CSV (24 колонки)
+/export_xlsx — выгрузка Excel (XLSX)
 /today — за 24ч: сколько, ср. fit, топ интересов/ролей
 /stats — всего, за 7/30 дней, топ-3 интересов/стека
 /who [N] — последние N анкет (по умолчанию 10)
@@ -52,7 +53,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
   // /export — выгрузка CSV (пытаемся UTF-16LE/base64 → fallback на UTF-8)
   if (lc.startsWith("/export")) {
     let reason = "";
-  
+
     // 1) Пытаемся получить CSV как UTF-16LE base64 (железобетон для Excel)
     try {
       const j = await callWriter("export_csv_b64");
@@ -73,10 +74,10 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     } catch (e) {
       reason = e?.message || "export_b64_error";
     }
-  
+
     // 2) Фолбэк: обычный UTF-8 CSV (с BOM+sep=;)
     try {
-      const csv = await callWriter("export_csv", {}, true); // получаем как чистый текст
+      const csv = await callWriter("export_csv", {}, true); // получаем как текст
       if (typeof csv === "string" && csv.length) {
         const fd = new FormData();
         fd.append("chat_id", String(chat));
@@ -90,13 +91,37 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     } catch (e) {
       if (!reason) reason = e?.message || "export_csv_error";
     }
-  
+
     await tg("sendMessage", { chat_id: chat, text: `/export: ошибка (${reason || "unknown"})` });
     return true;
   }
 
-
-
+  // /export_xlsx — выгружает реальный XLSX
+  if (lc.startsWith("/export_xlsx")) {
+    try {
+      const j = await callWriter("export_xlsx_b64");
+      if (j?.ok && j.base64) {
+        const buf = Buffer.from(j.base64, "base64");
+        const fd = new FormData();
+        fd.append("chat_id", String(chat));
+        fd.append("document",
+          new Blob([buf], {
+            type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          }),
+          j.filename || "recruits.xlsx"
+        );
+        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
+          method: "POST",
+          body: fd,
+        });
+        return true;
+      }
+    } catch (e) {
+      // fall through
+    }
+    await tg("sendMessage", { chat_id: chat, text: "/export_xlsx: ошибка" });
+    return true;
+  }
 
   // /today
   if (lc.startsWith("/today")) {
@@ -161,7 +186,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
   if (lc.startsWith("/digest")) {
     const j = await callWriter("digest");
     if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/digest: ошибка"}); return true; }
-    const msg = (j.digest || "").replace(/\*/g, ""); // убираем * из writer'а
+    const msg = (j.digest || "").replace(/\*/g, "");
     await tg("sendMessage", { chat_id: chat, text: msg });
     return true;
   }
