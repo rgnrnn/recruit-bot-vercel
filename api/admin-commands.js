@@ -28,6 +28,20 @@ function lineOf(r) {
   return `${fit.padStart(2," ")} ★  ${name}  ·  ${rolesShort}`;
 }
 
+// --- force-UTF16LE encoder (BOM + little-endian pairs) ---
+function toUtf16leBuffer(str) {
+  // убираем возможный текстовый BOM, если вдруг есть
+  if (str.charCodeAt(0) === 0xFEFF) str = str.slice(1);
+  const buf = Buffer.allocUnsafe(2 + str.length * 2);
+  buf[0] = 0xFF; buf[1] = 0xFE; // BOM
+  for (let i = 0, o = 2; i < str.length; i++, o += 2) {
+    const c = str.charCodeAt(i);
+    buf[o]   =  c        & 0xFF;   // low byte
+    buf[o+1] = (c >>> 8) & 0xFF;   // high byte
+  }
+  return buf;
+}
+
 export async function handleAdminCommand({ text, uid, chat }, tg) {
   if (!isAdmin(uid)) return false;
   const raw = text.trim();
@@ -50,19 +64,26 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     return true;
   }
 
-  // /export — выгрузка CSV (пытаемся UTF-16LE/base64 → fallback на UTF-8)
+  // /export — выгрузка CSV (UTF-16LE «железобетон» для Excel)
   if (lc.startsWith("/export")) {
     let reason = "";
 
-    // 1) Пытаемся получить CSV как UTF-16LE base64 (железобетон для Excel)
     try {
+      // 1) Пытаемся взять готовую UTF-16LE base64 с Apps Script
       const j = await callWriter("export_csv_b64");
       if (j?.ok && j.base64) {
-        const buf = Buffer.from(j.base64, "base64");
+        let buf = Buffer.from(j.base64, "base64");
+        // если нет FF FE в начале — перестрахуемся и соберём UTF-16LE сами
+        if (!(buf[0] === 0xFF && buf[1] === 0xFE)) {
+          const csvText = await callWriter("export_csv", {}, true); // текст UTF-8
+          buf = toUtf16leBuffer(String(csvText || ""));
+        }
         const fd = new FormData();
         fd.append("chat_id", String(chat));
-        // Excel "любит" этот MIME
-        fd.append("document", new Blob([buf], { type: "application/vnd.ms-excel" }), j.filename || "recruits.csv");
+        fd.append("document",
+          new Blob([buf], { type: "application/vnd.ms-excel" }),
+          j.filename || "recruits.csv"
+        );
         await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
           method: "POST",
           body: fd,
@@ -75,32 +96,27 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
       reason = e?.message || "export_b64_error";
     }
 
-    // 2) Фолбэк: обычный UTF-8 CSV (с BOM+sep=;)
-// 2) Фолбэк: перекодируем текст в UTF-16LE + BOM и шлём как Excel
-  try {
-    let csv = await callWriter("export_csv", {}, true); // текст (UTF-8)
-    if (typeof csv === "string" && csv.length) {
-      // уберём возможный текстовый BOM из строки, чтобы не продублировать
-      csv = csv.replace(/^\uFEFF/, "");
-      const bom = Buffer.from([0xFF, 0xFE]);
-      const u16 = Buffer.from(csv, "utf16le");
-      const buf = Buffer.concat([bom, u16]);
-  
-      const fd = new FormData();
-      fd.append("chat_id", String(chat));
-      fd.append(
-        "document",
-        new Blob([buf], { type: "application/vnd.ms-excel" }),
-        "recruits.csv"
-      );
-      await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
-        method: "POST",
-        body: fd,
-      });
-      return true;
+    // 2) Фолбэк: берём текст и насильно конвертируем в UTF-16LE + BOM в Node
+    try {
+      const csv = await callWriter("export_csv", {}, true); // текст (UTF-8)
+      if (typeof csv === "string" && csv.length) {
+        const buf = toUtf16leBuffer(csv);
+        const fd = new FormData();
+        fd.append("chat_id", String(chat));
+        fd.append(
+          "document",
+          new Blob([buf], { type: "application/vnd.ms-excel" }),
+          "recruits.csv"
+        );
+        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
+          method: "POST",
+          body: fd,
+        });
+        return true;
+      }
+    } catch (e) {
+      if (!reason) reason = e?.message || "export_csv_error";
     }
-  } catch (e) { /* reason уже заполнен выше, оставляем */ }
-
 
     await tg("sendMessage", { chat_id: chat, text: `/export: ошибка (${reason || "unknown"})` });
     return true;
