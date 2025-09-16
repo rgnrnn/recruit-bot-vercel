@@ -51,7 +51,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     const msg =
 `Команды админа:
 /help — список команд
-/export — выгрузка CSV (устар. алиас, лучше /file)
+/export — выгрузка CSV (алиас, лучше /file)
 /file [csv|xlsx] — прислать файл (по умолчанию csv)
 /file_link [csv|xlsx] — дать ссылку на файл (Google Drive)
 /export_xlsx — выгрузка Excel (XLSX)
@@ -65,10 +65,23 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     return true;
   }
 
+  // ===== /file_link (ПЕРЕД /file, чтобы не поймался startsWith("/file")) =====
+  if (lc === "/file_link" || lc.startsWith("/file_link ")) {
+    const arg = (raw.split(/\s+/)[1] || "").toLowerCase();
+    const op = (arg === "xlsx") ? "export_xlsx_drive_link" : "export_csv_drive_link";
+    try {
+      const j = await callWriter(op);
+      if (j?.ok && j.url) {
+        await tg("sendMessage", { chat_id: chat, text: j.url });
+        return true;
+      }
+    } catch {}
+    await tg("sendMessage", { chat_id: chat, text: `/file_link: ошибка (${arg||"csv"})` });
+    return true;
+  }
+
   // ===== /file =====
-  // /file         -> CSV (cp1251), железобетон для Excel RU
-  // /file xlsx    -> XLSX
-  if (lc.startsWith("/file")) {
+  if (lc === "/file" || lc.startsWith("/file ")) {
     const arg = (raw.split(/\s+/)[1] || "").toLowerCase();
 
     // xlsx
@@ -140,31 +153,14 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     return true;
   }
 
-  // ===== /file_link =====
-  // /file_link         -> ссылка на CSV (cp1251) в Google Drive
-  // /file_link xlsx    -> ссылка на XLSX в Google Drive
-  if (lc.startsWith("/file_link")) {
-    const arg = (raw.split(/\s+/)[1] || "").toLowerCase();
-    const op = (arg === "xlsx") ? "export_xlsx_drive_link" : "export_csv_drive_link";
-    try {
-      const j = await callWriter(op);
-      if (j?.ok && j.url) {
-        await tg("sendMessage", { chat_id: chat, text: j.url });
-        return true;
-      }
-    } catch {}
-    await tg("sendMessage", { chat_id: chat, text: `/file_link: ошибка (${arg||"csv"})` });
-    return true;
-  }
-
   // ===== устаревший алиас /export (оставлен на всякий) =====
-  if (lc.startsWith("/export")) {
+  if (lc === "/export" || lc.startsWith("/export ")) {
     const handled = await handleAdminCommand({ text: "/file", uid, chat }, tg);
     return true;
   }
 
   // /export_xlsx — оставляем
-  if (lc.startsWith("/export_xlsx")) {
+  if (lc === "/export_xlsx" || lc.startsWith("/export_xlsx ")) {
     try {
       const j = await callWriter("export_xlsx_b64");
       if (j?.ok && j.base64) {
@@ -172,10 +168,15 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
         const fd = new FormData();
         fd.append("chat_id", String(chat));
         fd.append("document",
-          new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+          new Blob([buf], {
+            type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          }),
           j.filename || "recruits.xlsx"
         );
-        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
+        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
+          method: "POST",
+          body: fd,
+        });
         return true;
       }
     } catch {}
@@ -184,7 +185,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
   }
 
   // /today
-  if (lc.startsWith("/today")) {
+  if (lc === "/today" || lc.startsWith("/today ")) {
     const j = await callWriter("today");
     if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/today: ошибка"}); return true; }
     const msg =
@@ -197,7 +198,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
   }
 
   // /stats
-  if (lc.startsWith("/stats")) {
+  if (lc === "/stats" || lc.startsWith("/stats ")) {
     const j = await callWriter("stats");
     if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/stats: ошибка"}); return true; }
     const msg =
@@ -210,7 +211,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
   }
 
   // /who [N]
-  if (lc.startsWith("/who")) {
+  if (lc === "/who" || lc.startsWith("/who ")) {
     const parts = raw.split(/\s+/);
     const n = Math.max(1, Math.min(50, Number(parts[1]) || 10));
     const j = await callWriter("who", { limit: n });
@@ -221,7 +222,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
   }
 
   // /find <mask>
-  if (lc.startsWith("/find")) {
+  if (lc === "/find" || lc.startsWith("/find ")) {
     const mask = raw.replace(/^\/find\s*/i, "");
     if (!mask) { await tg("sendMessage",{chat_id:chat,text:"/find <mask>"}); return true; }
     const j = await callWriter("find", { q: mask, limit: 20 });
@@ -232,7 +233,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
   }
 
   // /slots
-  if (lc.startsWith("/slots")) {
+  if (lc === "/slots" || lc.startsWith("/slots ")) {
     const j = await callWriter("slots");
     if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/slots: ошибка"}); return true; }
     const days  = Object.entries(j.days || {}).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k} (${v})`).join(", ") || "-";
@@ -243,7 +244,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
   }
 
   // /digest — текст без Markdown
-  if (lc.startsWith("/digest")) {
+  if (lc === "/digest" || lc.startsWith("/digest ")) {
     const j = await callWriter("digest");
     if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/digest: ошибка"}); return true; }
     const msg = (j.digest || "").replace(/\*/g, "");
