@@ -115,6 +115,23 @@ const TIME_SLOTS = ["11:00–13:00","13:00–15:00","15:00–16:00","17:00–19:
 
 /* ---------------- Redis ---------------- */
 function rUrl(path){ if(!REDIS_BASE||!REDIS_TOKEN) throw new Error("Redis env missing"); return new URL(REDIS_BASE+path); }
+
+
+// HOTFIX: если finalize не определён, объявим его пустым безопасным обработчиком
+async function finalize(ctx) {
+  try {
+    // если у вас есть сохранение анкеты — вставьте реальный вызов сюда
+    // await saveSurvey(ctx);
+    if (ctx?.tg && ctx?.chat) {
+      await ctx.tg("sendMessage", { chat_id: ctx.chat, text: "Готово! Слоты записаны ✅" });
+    }
+  } catch {}
+}
+
+
+
+
+
 async function rGET(path){ const r=await fetch(rUrl(path),{headers:{Authorization:`Bearer ${REDIS_TOKEN}`}}); return r.json(); }
 async function rCall(path,qs){ const u=rUrl(path); if(qs) for(const[k,v]of Object.entries(qs)) u.searchParams.set(k,String(v)); const r=await fetch(u,{headers:{Authorization:`Bearer ${REDIS_TOKEN}`}}); return r.json(); }
 const rSet=(k,v,qs)=> rCall(`/set/${encodeURIComponent(k)}/${encodeURIComponent(v)}`, qs);
