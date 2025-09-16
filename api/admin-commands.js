@@ -30,14 +30,13 @@ function lineOf(r) {
 
 // --- force-UTF16LE encoder (BOM + little-endian pairs) ---
 function toUtf16leBuffer(str) {
-  // убираем возможный текстовый BOM, если вдруг есть
-  if (str.charCodeAt(0) === 0xFEFF) str = str.slice(1);
+  if (str && str.charCodeAt(0) === 0xFEFF) str = str.slice(1); // убрать текстовый BOM
   const buf = Buffer.allocUnsafe(2 + str.length * 2);
-  buf[0] = 0xFF; buf[1] = 0xFE; // BOM
+  buf[0] = 0xFF; buf[1] = 0xFE;
   for (let i = 0, o = 2; i < str.length; i++, o += 2) {
     const c = str.charCodeAt(i);
-    buf[o]   =  c        & 0xFF;   // low byte
-    buf[o+1] = (c >>> 8) & 0xFF;   // high byte
+    buf[o]   =  c        & 0xFF;
+    buf[o+1] = (c >>> 8) & 0xFF;
   }
   return buf;
 }
@@ -64,18 +63,37 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     return true;
   }
 
-  // /export — выгрузка CSV (UTF-16LE «железобетон» для Excel)
+  // /export — сначала CP1251 (ANSI для RU Excel), затем UTF-16LE, затем сборка в Node
   if (lc.startsWith("/export")) {
     let reason = "";
 
+    // 0) Пробуем CP1251 CSV (Excel RU открывает идеально «по двойному клику»)
     try {
-      // 1) Пытаемся взять готовую UTF-16LE base64 с Apps Script
+      const j1251 = await callWriter("export_csv_cp1251_b64");
+      if (j1251?.ok && j1251.base64) {
+        const buf = Buffer.from(j1251.base64, "base64");
+        const fd = new FormData();
+        fd.append("chat_id", String(chat));
+        fd.append("document",
+          new Blob([buf], { type: "application/vnd.ms-excel" }),
+          j1251.filename || "recruits.csv"
+        );
+        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
+          method: "POST",
+          body: fd,
+        });
+        return true;
+      }
+    } catch (e) { reason = e?.message || "cp1251_error"; }
+
+    // 1) Пытаемся UTF-16LE base64 со стороны Apps Script
+    try {
       const j = await callWriter("export_csv_b64");
       if (j?.ok && j.base64) {
         let buf = Buffer.from(j.base64, "base64");
-        // если нет FF FE в начале — перестрахуемся и соберём UTF-16LE сами
+        // Если вдруг нет FF FE — страхуемся
         if (!(buf[0] === 0xFF && buf[1] === 0xFE)) {
-          const csvText = await callWriter("export_csv", {}, true); // текст UTF-8
+          const csvText = await callWriter("export_csv", {}, true);
           buf = toUtf16leBuffer(String(csvText || ""));
         }
         const fd = new FormData();
@@ -96,9 +114,9 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
       reason = e?.message || "export_b64_error";
     }
 
-    // 2) Фолбэк: берём текст и насильно конвертируем в UTF-16LE + BOM в Node
+    // 2) Фолбэк: берём текст и собираем UTF-16LE в Node
     try {
-      const csv = await callWriter("export_csv", {}, true); // текст (UTF-8)
+      const csv = await callWriter("export_csv", {}, true);
       if (typeof csv === "string" && csv.length) {
         const buf = toUtf16leBuffer(csv);
         const fd = new FormData();
@@ -142,9 +160,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
         });
         return true;
       }
-    } catch (e) {
-      // fall through
-    }
+    } catch (e) { /* ignore */ }
     await tg("sendMessage", { chat_id: chat, text: "/export_xlsx: ошибка" });
     return true;
   }
@@ -208,7 +224,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     return true;
   }
 
-  // /digest — текст без Markdown (чтобы не падать на подчёркиваниях)
+  // /digest — текст без Markdown
   if (lc.startsWith("/digest")) {
     const j = await callWriter("digest");
     if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/digest: ошибка"}); return true; }
