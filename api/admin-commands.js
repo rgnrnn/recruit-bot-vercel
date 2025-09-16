@@ -49,24 +49,52 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     return true;
   }
 
-  // /export — CSV (UTF-16LE) с sep=;
+  // /export — выгрузка CSV (пытаемся UTF-16LE/base64 → fallback на UTF-8)
   if (lc.startsWith("/export")) {
-    // новый op из Apps Script
-    const j = await callWriter("export_csv_b64");
-    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/export: ошибка"}); return true; }
+    let reason = "";
   
-    const buf = Buffer.from(j.base64, "base64");
-    const fd = new FormData();
-    fd.append("chat_id", String(chat));
-    // Даём MIME, который Excel точно ассоциирует с собой
-    fd.append("document", new Blob([buf], { type: "application/vnd.ms-excel" }), j.filename || "recruits.csv");
+    // 1) Пытаемся получить CSV как UTF-16LE base64 (железобетон для Excel)
+    try {
+      const j = await callWriter("export_csv_b64");
+      if (j?.ok && j.base64) {
+        const buf = Buffer.from(j.base64, "base64");
+        const fd = new FormData();
+        fd.append("chat_id", String(chat));
+        // Excel "любит" этот MIME
+        fd.append("document", new Blob([buf], { type: "application/vnd.ms-excel" }), j.filename || "recruits.csv");
+        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
+          method: "POST",
+          body: fd,
+        });
+        return true;
+      } else {
+        reason = j?.reason || "writer_not_ok";
+      }
+    } catch (e) {
+      reason = e?.message || "export_b64_error";
+    }
   
-    await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
-      method: "POST",
-      body: fd,
-    });
+    // 2) Фолбэк: обычный UTF-8 CSV (с BOM+sep=;)
+    try {
+      const csv = await callWriter("export_csv", {}, true); // получаем как чистый текст
+      if (typeof csv === "string" && csv.length) {
+        const fd = new FormData();
+        fd.append("chat_id", String(chat));
+        fd.append("document", new Blob([csv], { type: "text/csv; charset=utf-8" }), "recruits.csv");
+        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
+          method: "POST",
+          body: fd,
+        });
+        return true;
+      }
+    } catch (e) {
+      if (!reason) reason = e?.message || "export_csv_error";
+    }
+  
+    await tg("sendMessage", { chat_id: chat, text: `/export: ошибка (${reason || "unknown"})` });
     return true;
   }
+
 
 
 
