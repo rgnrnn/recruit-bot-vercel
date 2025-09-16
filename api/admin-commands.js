@@ -1,6 +1,5 @@
 // api/admin-commands.js
 // Админ-команды: /help /export /file /file_link /export_xlsx /today /stats /who /find /slots /digest
-// Требует env: ADMIN_CHAT_ID, SHEETS_WEBHOOK_URL, SHEETS_WEBHOOK_SECRET, TELEGRAM_BOT_TOKEN
 
 const ADMIN_ID = String(process.env.ADMIN_CHAT_ID || "");
 const URL  = process.env.SHEETS_WEBHOOK_URL;
@@ -28,9 +27,9 @@ function lineOf(r) {
   return `${fit.padStart(2," ")} ★  ${name}  ·  ${rolesShort}`;
 }
 
-// --- force-UTF16LE encoder (BOM + little-endian pairs) ---
+// UTF-16LE encoder (BOM + little-endian)
 function toUtf16leBuffer(str) {
-  if (str && str.charCodeAt(0) === 0xFEFF) str = str.slice(1); // убрать текстовый BOM
+  if (str && str.charCodeAt(0) === 0xFEFF) str = str.slice(1);
   const buf = Buffer.allocUnsafe(2 + str.length * 2);
   buf[0] = 0xFF; buf[1] = 0xFE;
   for (let i = 0, o = 2; i < str.length; i++, o += 2) {
@@ -51,21 +50,16 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     const msg =
 `Команды админа:
 /help — список команд
-/export — выгрузка CSV (алиас, лучше /file)
 /file [csv|xlsx] — прислать файл (по умолчанию csv)
 /file_link [csv|xlsx] — дать ссылку на файл (Google Drive)
-/export_xlsx — выгрузка Excel (XLSX)
-/today — за 24ч: сколько, ср. fit, топ интересов/ролей
-/stats — всего, за 7/30 дней, топ-3 интересов/стека
-/who [N] — последние N анкет (по умолчанию 10)
-/find <mask> — поиск по имени/тг/ролям
-/slots — агрегированные окна времени
-/digest — top-10 и топ-слоты (как текст)`;
+/export — алиас на /file
+/export_xlsx — явная выгрузка Excel (XLSX)
+/today /stats /who /find /slots /digest — как раньше`;
     await tg("sendMessage", { chat_id: chat, text: msg });
     return true;
   }
 
-  // ===== /file_link (ПЕРЕД /file, чтобы не поймался startsWith("/file")) =====
+  // --- /file_link: ОБРАБАТЫВАЕМ ПЕРВЫМ! ---
   if (lc === "/file_link" || lc.startsWith("/file_link ")) {
     const arg = (raw.split(/\s+/)[1] || "").toLowerCase();
     const op = (arg === "xlsx") ? "export_xlsx_drive_link" : "export_csv_drive_link";
@@ -75,12 +69,14 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
         await tg("sendMessage", { chat_id: chat, text: j.url });
         return true;
       }
-    } catch {}
-    await tg("sendMessage", { chat_id: chat, text: `/file_link: ошибка (${arg||"csv"})` });
+      await tg("sendMessage", { chat_id: chat, text: `/file_link ${arg||"csv"}: ошибка — ${j?.reason || "нет данных"}` });
+    } catch (e) {
+      await tg("sendMessage", { chat_id: chat, text: `/file_link ${arg||"csv"}: ошибка — ${e?.message || "unknown"}` });
+    }
     return true;
   }
 
-  // ===== /file =====
+  // --- /file ---
   if (lc === "/file" || lc.startsWith("/file ")) {
     const arg = (raw.split(/\s+/)[1] || "").toLowerCase();
 
@@ -99,8 +95,10 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
           await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
           return true;
         }
-      } catch {}
-      await tg("sendMessage", { chat_id: chat, text: "/file xlsx: ошибка" });
+        await tg("sendMessage", { chat_id: chat, text: `/file xlsx: ошибка — ${j?.reason || "нет данных"}` });
+      } catch (e) {
+        await tg("sendMessage", { chat_id: chat, text: `/file xlsx: ошибка — ${e?.message || "unknown"}` });
+      }
       return true;
     }
 
@@ -118,9 +116,11 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
         await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
         return true;
       }
-    } catch {}
+    } catch (e) {
+      await tg("sendMessage", { chat_id: chat, text: `/file: ошибка cp1251 — ${e?.message || "unknown"}` });
+    }
 
-    // страхуемся: UTF-16LE или сборка в Node
+    // страхуемся: UTF-16LE с writer или собираем в Node
     try {
       const j = await callWriter("export_csv_b64");
       if (j?.ok && j.base64) {
@@ -135,8 +135,12 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
         await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
         return true;
       }
-    } catch {}
+      await tg("sendMessage", { chat_id: chat, text: `/file: ошибка utf16 — ${j?.reason || "нет данных"}` });
+    } catch (e) {
+      await tg("sendMessage", { chat_id: chat, text: `/file: ошибка utf16 — ${e?.message || "unknown"}` });
+    }
 
+    // последний фолбэк: текст → UTF-16LE в Node
     try {
       const csv = await callWriter("export_csv", {}, true);
       if (typeof csv === "string" && csv.length) {
@@ -147,19 +151,21 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
         await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
         return true;
       }
-    } catch {}
+    } catch (e) {
+      await tg("sendMessage", { chat_id: chat, text: `/file: ошибка fallback — ${e?.message || "unknown"}` });
+      return true;
+    }
 
-    await tg("sendMessage", { chat_id: chat, text: "/file: ошибка" });
+    await tg("sendMessage", { chat_id: chat, text: "/file: ошибка (пустой ответ)" });
     return true;
   }
 
-  // ===== устаревший алиас /export (оставлен на всякий) =====
+  // /export — алиас
   if (lc === "/export" || lc.startsWith("/export ")) {
-    const handled = await handleAdminCommand({ text: "/file", uid, chat }, tg);
-    return true;
+    return await handleAdminCommand({ text: "/file", uid, chat }, tg);
   }
 
-  // /export_xlsx — оставляем
+  // /export_xlsx — явный xlsx
   if (lc === "/export_xlsx" || lc.startsWith("/export_xlsx ")) {
     try {
       const j = await callWriter("export_xlsx_b64");
@@ -168,26 +174,23 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
         const fd = new FormData();
         fd.append("chat_id", String(chat));
         fd.append("document",
-          new Blob([buf], {
-            type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-          }),
+          new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
           j.filename || "recruits.xlsx"
         );
-        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
-          method: "POST",
-          body: fd,
-        });
+        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
         return true;
       }
-    } catch {}
-    await tg("sendMessage", { chat_id: chat, text: "/export_xlsx: ошибка" });
+      await tg("sendMessage", { chat_id: chat, text: `/export_xlsx: ошибка — ${j?.reason || "нет данных"}` });
+    } catch (e) {
+      await tg("sendMessage", { chat_id: chat, text: `/export_xlsx: ошибка — ${e?.message || "unknown"}` });
+    }
     return true;
   }
 
   // /today
   if (lc === "/today" || lc.startsWith("/today ")) {
     const j = await callWriter("today");
-    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/today: ошибка"}); return true; }
+    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:`/today: ошибка — ${j?.reason || "нет данных"}`}); return true; }
     const msg =
 `За 24ч: ${j.total}
 Средний fit: ${j.avg_fit}
@@ -200,7 +203,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
   // /stats
   if (lc === "/stats" || lc.startsWith("/stats ")) {
     const j = await callWriter("stats");
-    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/stats: ошибка"}); return true; }
+    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:`/stats: ошибка — ${j?.reason || "нет данных"}`}); return true; }
     const msg =
 `Всего: ${j.total}
 За 7/30 дней: ${j.last7} / ${j.last30}
@@ -215,7 +218,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     const parts = raw.split(/\s+/);
     const n = Math.max(1, Math.min(50, Number(parts[1]) || 10));
     const j = await callWriter("who", { limit: n });
-    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/who: ошибка"}); return true; }
+    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:`/who: ошибка — ${j?.reason || "нет данных"}`}); return true; }
     const lines = j.rows.map(lineOf).join("\n") || "–";
     await tg("sendMessage", { chat_id: chat, text: lines });
     return true;
@@ -226,7 +229,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     const mask = raw.replace(/^\/find\s*/i, "");
     if (!mask) { await tg("sendMessage",{chat_id:chat,text:"/find <mask>"}); return true; }
     const j = await callWriter("find", { q: mask, limit: 20 });
-    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/find: ошибка"}); return true; }
+    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:`/find: ошибка — ${j?.reason || "нет данных"}`}); return true; }
     const lines = j.rows.map(lineOf).join("\n") || "–";
     await tg("sendMessage", { chat_id: chat, text: lines });
     return true;
@@ -235,7 +238,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
   // /slots
   if (lc === "/slots" || lc.startsWith("/slots ")) {
     const j = await callWriter("slots");
-    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/slots: ошибка"}); return true; }
+    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:`/slots: ошибка — ${j?.reason || "нет данных"}`}); return true; }
     const days  = Object.entries(j.days || {}).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k} (${v})`).join(", ") || "-";
     const slots = Object.entries(j.slots|| {}).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k} (${v})`).join(", ") || "-";
     const msg = `Дни: ${days}\nСлоты: ${slots}`;
@@ -246,11 +249,11 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
   // /digest — текст без Markdown
   if (lc === "/digest" || lc.startsWith("/digest ")) {
     const j = await callWriter("digest");
-    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:"/digest: ошибка"}); return true; }
+    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:`/digest: ошибка — ${j?.reason || "нет данных"}`}); return true; }
     const msg = (j.digest || "").replace(/\*/g, "");
     await tg("sendMessage", { chat_id: chat, text: msg });
     return true;
   }
 
-  return false; // не админ-команда
+  return false;
 }
