@@ -1,7 +1,4 @@
 // api/telegram.js — Telegram webhook (Vercel, Node 20, ESM)
-// Полный поток: Q1 consent -> Q2 name -> Age -> Q4 interests (multi) -> Q5 stack (multi)
-// -> A1/A2/A3 -> about (text) -> time (days + slots) -> FINAL (LLM + Sheets)
-
 import { handleAdminCommand } from "./admin-commands.js";
 
 const TOKEN        = process.env.TELEGRAM_BOT_TOKEN;
@@ -93,13 +90,10 @@ const STACK_PAIRS = [
 ];
 const STACK_LABEL_BY_ID = Object.fromEntries(STACK_ITEMS.map(x => [x.id, x.label]));
 
-// резерв старых констант (не используются)
-const A_INTERESTS = ["Backend","Graph/Neo4j","Vector/LLM","Frontend","DevOps/MLOps","Data/ETL","Product/Coordination"];
-const A_STACK     = ["Python/FastAPI","PostgreSQL/SQL","Neo4j","pgvector","LangChain/LangGraph","React/TS","Docker/K8s/Linux","CI/GitHub"];
+// legacy (не используются)
 const A1 = ["быстро прототипирую","проектирую основательно","исследую гипотезы","синхронизирую людей"];
 const A2 = ["MVP важнее идеала","полирую до совершенства"];
 const A3 = ["риск/скорость","надёжность/предсказуемость"];
-const TIME_WINDOWS = ["будни утро","будни день","будни вечер","выходные утро","выходные день","выходные вечер"]; // legacy only
 
 // Лимиты мультивыбора
 const MAX_INTERESTS = 7;
@@ -115,23 +109,6 @@ const TIME_SLOTS = ["11:00–13:00","13:00–15:00","15:00–16:00","17:00–19:
 
 /* ---------------- Redis ---------------- */
 function rUrl(path){ if(!REDIS_BASE||!REDIS_TOKEN) throw new Error("Redis env missing"); return new URL(REDIS_BASE+path); }
-
-
-// HOTFIX: если finalize не определён, объявим его пустым безопасным обработчиком
-async function finalize(ctx) {
-  try {
-    // если у вас есть сохранение анкеты — вставьте реальный вызов сюда
-    // await saveSurvey(ctx);
-    if (ctx?.tg && ctx?.chat) {
-      await ctx.tg("sendMessage", { chat_id: ctx.chat, text: "Готово! Слоты записаны ✅" });
-    }
-  } catch {}
-}
-
-
-
-
-
 async function rGET(path){ const r=await fetch(rUrl(path),{headers:{Authorization:`Bearer ${REDIS_TOKEN}`}}); return r.json(); }
 async function rCall(path,qs){ const u=rUrl(path); if(qs) for(const[k,v]of Object.entries(qs)) u.searchParams.set(k,String(v)); const r=await fetch(u,{headers:{Authorization:`Bearer ${REDIS_TOKEN}`}}); return r.json(); }
 const rSet=(k,v,qs)=> rCall(`/set/${encodeURIComponent(k)}/${encodeURIComponent(v)}`, qs);
@@ -148,14 +125,11 @@ function newRun(){
     started_at:new Date().toISOString(),
     step:"consent", consent:"", name:"",
     age:"",
-    interests:[],
-    other_interests:[],
-    stack:[],
-    other_stack:[],
+    interests:[], other_interests:[],
+    stack:[],     other_stack:[],
     a1:"", a2:"", a3:"",
     about:"",
-    time_days:[],
-    time_slots:[],
+    time_days:[], time_slots:[],
     time_zone:"",
     time_windows:[],
     specific_slots_text:"",
@@ -204,12 +178,10 @@ const CONSENT_TEXT = `старт в команде со-основателей: 
 формат потенциального взаимодействия - доля и партнёрство: больше влияния, больше ответственности, быстрее рост 🤝📈🚀
 `;
 
-const kbConsent = () => ({
-  inline_keyboard: [[
-    { text: "✅ согласен", callback_data: "consent_yes" },
-    { text: "❌ Не сейчас", callback_data: "consent_no"  }
-  ]]
-});
+const kbConsent = () => ({ inline_keyboard: [[
+  { text: "✅ согласен", callback_data: "consent_yes" },
+  { text: "❌ Не сейчас", callback_data: "consent_no"  }
+]]});
 const kbContinueReset = () => ({ inline_keyboard:[[ {text:"▶️ продолжить",callback_data:"continue"}, {text:"🔁 начать заново",callback_data:"reset_start"} ]]});
 const kbName = () => ({ inline_keyboard: [[{ text: "🔁 начать заново", callback_data: "reset_start" }]] });
 const kbSingle = (prefix, opts)=>({ inline_keyboard: opts.map(o=>[{text:o,callback_data:`${prefix}:${o}`}]).concat([[{text:"🔁 начать заново",callback_data:"reset_start"}]]) });
@@ -341,8 +313,6 @@ async function runLLM(u, s){
     '"fit_score":0-100,"time_commitment":"≤5ч"|"6–10ч"|"11–20ч"|">20ч","time_zone":str,',
     '"time_windows":["будни утро","будни день","будни вечер","выходные утро","выходные день","выходные вечер"],',
     '"specific_slots_text":str,"links":[str],"summary":"2–3 предложения" }',
-    "Рубрика: роль/стек 35; вовлечённость 20; инициативность/ссылки 15; стиль-соответствие 10; широта 10; ясность 10.",
-    "Психотипы: builder, architect, researcher, operator, integrator.",
     "Ответ только JSON."
   ].join("\n");
   const body = {
@@ -363,17 +333,6 @@ async function appendSheets(row){
     body: JSON.stringify({ secret: SHEETS_SECRET, op:"append", row })
   }).then(x=>x.json()).catch(()=>({ok:false}));
   return res;
-}
-
-// (оставлен на всякий случай; /digest теперь делает admin-commands.js)
-async function cmdDigest(chat){
-  if (!SHEETS_URL || !SHEETS_SECRET) { await tg("sendMessage",{chat_id:chat,text:"/digest недоступен: не настроен Sheets writer."}); return; }
-  const j = await fetch(SHEETS_URL, {
-    method:"POST", headers:{ "content-type":"application/json" },
-    body: JSON.stringify({ secret: SHEETS_SECRET, op:"digest" })
-  }).then(x=>x.json()).catch(()=>null);
-  if (j?.ok && j.digest) await tg("sendMessage",{chat_id:chat,text:j.digest}); // без Markdown
-  else await tg("sendMessage",{chat_id:chat,text:"/digest: нет данных или ошибка."});
 }
 
 /* ---------------- Entry ---------------- */
@@ -409,13 +368,69 @@ async function continueFlow(uid,chat,s){
   await sendWelcome(chat,uid);
 }
 
+/* ---------------- Финал анкеты ---------------- */
+async function finalize(chat, user, s) {
+  try {
+    // 1) LLM (или заглушка)
+    const llm = await runLLM(user, s) || {};
+
+    // 2) Готовим строку для Sheets (строго в порядке HEADERS)
+    const nowISO = new Date().toISOString();
+    const row = [
+      nowISO,
+      s.run_id || "",
+      s.started_at || "",
+      user?.username ? ("@"+user.username) : String(user?.id || ""),
+      String(user?.id || ""),
+      s.consent || "yes",
+      s.name || "",
+      JSON.stringify(s.interests || []),
+      JSON.stringify(s.stack || []),
+      s.a1 || "",
+      s.a2 || "",
+      s.a3 || "",
+      s.about || "",
+      llm.time_zone || s.time_zone || "",
+      JSON.stringify({ days: s.time_days || [], slots: s.time_slots || [] }),
+      s.specific_slots_text || (llm.specific_slots_text || ""),
+      JSON.stringify(llm || {}),
+      typeof llm.fit_score === "number" ? llm.fit_score : 65,
+      JSON.stringify(llm.roles || []),
+      JSON.stringify(llm.stack || s.stack || []),
+      JSON.stringify(llm.work_style || {}),
+      llm.time_commitment || (((s.time_days?.length||0)+(s.time_slots?.length||0))>=5 ? "11–20ч" : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч"),
+      JSON.stringify(llm.links || []),
+      llm.summary || "Сохранено."
+    ];
+
+    // 3) Пишем в таблицу
+    await appendSheets(row);
+
+    // 4) Сообщение пользователю
+    const days  = (s.time_days||[]).join(", ") || "—";
+    const slots = (s.time_slots||[]).join(", ") || "—";
+    await tg("sendMessage", {
+      chat_id: chat,
+      text: `Готово! Слоты записаны ✅\nДни: ${days}\nВремя: ${slots}\nМожно закрывать диалог.`,
+    });
+
+    // 5) Завершаем сессию
+    s.step = "done";
+    await putSess(user.id, s);
+    await delSess(user.id); // если хочешь сохранять — закомментируй
+  } catch (e) {
+    console.error("finalize error:", e?.message || String(e));
+    await tg("sendMessage", { chat_id: chat, text: "⚠️ Не удалось сохранить. Попробуй ещё раз: /start" });
+  }
+}
+
 /* ---------------- Handlers ---------------- */
 async function onMessage(m){
   const uid  = m.from.id; if(await overRL(uid)) return;
   const chat = m.chat.id;
   const text = (m.text || "").trim();
 
-  // админ-команды — обрабатываем ПЕРВЫМИ
+  // админ-команды
   if (text.startsWith("/")) {
     const handled = await handleAdminCommand({ text, uid, chat }, tg);
     if (handled) return;
@@ -450,8 +465,7 @@ async function onMessage(m){
 
   if (s.step==="about"){ s.about=text.slice(0,1200); s.step="time"; await putSess(uid,s); await sendTime(chat,s); return; }
 
-  // после ГОТОВО финализация идёт в onCallback(q7:done)
-
+  // дополнительный ввод к мультивыбору
   if (s.step === "interests" && text && !text.startsWith("/")) {
     s.other_interests = s.other_interests || [];
     if (s.other_interests.length < 5) s.other_interests.push(text.slice(0, 120));
@@ -459,7 +473,6 @@ async function onMessage(m){
     await tg("sendMessage", { chat_id: chat, text: "Добавил в список. Можешь отметить чекбоксы и/или нажать «ДАЛЬШЕ ➜»." });
     return;
   }
-
   if (s.step === "stack" && text && !text.startsWith("/")) {
     s.other_stack = s.other_stack || [];
     if (s.other_stack.length < 5) s.other_stack.push(text.slice(0, 120));
@@ -482,7 +495,7 @@ async function onCallback(q) {
   const isToggle =
     data.startsWith("q3id:") || data.startsWith("q4id:") ||
     data.startsWith("q7d:")  || data.startsWith("q7s:");
-  const tooFast  = await overRL(uid, isToggle ? 120 : 30);
+  const tooFast  = await overRL(uid, isToggle ? RL_TOGGLE_PER_MIN : RL_DEFAULT_PER_MIN);
   if (tooFast) { await answerCb("Слишком часто. Секунду…"); return; }
 
   const chat = q.message.chat.id;
@@ -520,7 +533,7 @@ async function onCallback(q) {
     return;
   }
 
-  // Q4
+  // Q4 interests
   if (data.startsWith("q3id:")) {
     if (s.step !== "interests") { await answerCb(); return; }
     const id    = data.slice(5);
@@ -550,7 +563,7 @@ async function onCallback(q) {
     return;
   }
 
-  // Q5
+  // Q5 stack
   if (data.startsWith("q4id:")) {
     if (s.step !== "stack") { await answerCb(); return; }
     const id    = data.slice(5);
@@ -611,9 +624,9 @@ async function onCallback(q) {
       await answerCb();
       return;
     }
-    // финал напрямую
+    // Сначала закрываем «часики» у Telegram, затем сохраняем
+    await answerCb("Секунду, записываю…");
     await finalize(chat, { id: uid, username: q.from.username }, s);
-    await answerCb();
     return;
   }
 }
