@@ -76,21 +76,31 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     }
 
     // 2) Фолбэк: обычный UTF-8 CSV (с BOM+sep=;)
-    try {
-      const csv = await callWriter("export_csv", {}, true); // получаем как текст
-      if (typeof csv === "string" && csv.length) {
-        const fd = new FormData();
-        fd.append("chat_id", String(chat));
-        fd.append("document", new Blob([csv], { type: "text/csv; charset=utf-8" }), "recruits.csv");
-        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
-          method: "POST",
-          body: fd,
-        });
-        return true;
-      }
-    } catch (e) {
-      if (!reason) reason = e?.message || "export_csv_error";
+// 2) Фолбэк: перекодируем текст в UTF-16LE + BOM и шлём как Excel
+  try {
+    let csv = await callWriter("export_csv", {}, true); // текст (UTF-8)
+    if (typeof csv === "string" && csv.length) {
+      // уберём возможный текстовый BOM из строки, чтобы не продублировать
+      csv = csv.replace(/^\uFEFF/, "");
+      const bom = Buffer.from([0xFF, 0xFE]);
+      const u16 = Buffer.from(csv, "utf16le");
+      const buf = Buffer.concat([bom, u16]);
+  
+      const fd = new FormData();
+      fd.append("chat_id", String(chat));
+      fd.append(
+        "document",
+        new Blob([buf], { type: "application/vnd.ms-excel" }),
+        "recruits.csv"
+      );
+      await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
+        method: "POST",
+        body: fd,
+      });
+      return true;
     }
+  } catch (e) { /* reason уже заполнен выше, оставляем */ }
+
 
     await tg("sendMessage", { chat_id: chat, text: `/export: ошибка (${reason || "unknown"})` });
     return true;
