@@ -200,7 +200,7 @@ async function sendAge(chat, uid, s) { await tg("sendMessage", { chat_id: chat, 
 async function sendInterests(chat, uid, s) {
   await tg("sendMessage", {
     chat_id: chat,
-    text: "4) что реально драйвит в последние 12 месяцев?\nотметь 2–7 направлений (чекбоксы). можно дополнить своим вариантом обычным сообщением",
+    text: "4) что реально драйвит в последние 12 месяцев?\nотметь 2–7 направлений (чекбоксы). можно дописать сообщением позже в вопросе "о себе"",
     parse_mode: "HTML",
     reply_markup: kbInterests(s.interests || [])
   });
@@ -208,7 +208,7 @@ async function sendInterests(chat, uid, s) {
 async function sendStack(chat, uid, s){
   await tg("sendMessage", {
     chat_id: chat,
-    text: "5) где тебе «можно доверить прод». \nотметь 2–7 пунктов (чекбоксы). свой инструмент можно дописать сообщением",
+    text: "5) где тебе «можно доверить прод». \nотметь 2–7 пунктов (чекбоксы). свой инструмент можно дописать сообщением позже в вопросе "о себе"",
     parse_mode: "HTML",
     reply_markup: kbStack(s.stack || [])
   });
