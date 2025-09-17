@@ -46,22 +46,29 @@ const INTEREST_PAIRS = [
 const LABEL_BY_ID = Object.fromEntries(INTEREST_ITEMS.map(x => [x.id, x.label]));
 
 const STACK_ITEMS = [
-  { id: "s_py_fastapi", label: "Python/FastAPI" }, { id: "s_postgres", label: "PostgreSQL/SQL" },
-  { id: "s_neo4j", label: "Neo4j" }, { id: "s_pgvector", label: "pgvector" },
-  { id: "s_langchain", label: "LangChain/LangGraph" }, { id: "s_llm_apis", label: "LLM APIs (OpenAI/Claude/etc.)" },
-  { id: "s_react_ts", label: "React/TypeScript" }, { id: "s_node_nest", label: "Node.js/NestJS" },
-  { id: "s_docker_k8s_lin", label: "Docker/Kubernetes/Linux" }, { id: "s_ci_cd", label: "CI/CD (GitHub Actions/GitLab)" },
-  { id: "s_kafka", label: "Kafka/Redpanda" }, { id: "s_redis_rabbit", label: "Redis/RabbitMQ" },
-  { id: "s_airflow_dbt", label: "Airflow/dbt" }, { id: "s_terraform", label: "Terraform/Ansible" },
-  { id: "s_nginx_traefik", label: "Nginx/Traefik" }, { id: "s_observability", label: "Observability (Prometheus/Grafana/OTel)" },
-  { id: "s_testing", label: "Testing (pytest/Playwright)" }, { id: "s_security", label: "Security (SSO/RBAC/Secrets)" },
-  { id: "s_cloud", label: "Cloud (AWS/GCP)" }, { id: "s_distributed", label: "Distributed Systems (CQRS/Event Sourcing)" },
+  { id: "i_backend",  label: "Backend (f.ex: Python/FastAPI/Postgres)" },
+  { id: "i_frontend", label: "Frontend (f.ex: React/TS)" },
+  { id: "i_graph",    label: "Graph" },
+  { id: "i_vector",   label: "Vector" },
+  { id: "i_data_etl", label: "Data/ETL (DWH/BI)" },
+  { id: "i_devops",   label: "DevOps/MLOps" },
+  { id: "i_product",  label: "Product/Coordination" },
+  { id: "i_integr",   label: "Integrations & API (ERP/1C/CRM)" },
+  { id: "i_rag",      label: "RAG / Retrieval Systems" },
+  { id: "i_agents",   label: "Agents / Orchestration (LangGraph)" },
+  { id: "i_kg",       label: "Knowledge Graphs / Онтологии" },
+  { id: "i_db_perf",  label: "DB & Perf (Postgres/pgvector)" },
+  { id: "i_sec",      label: "Security & Access" },
+  { id: "i_observ",   label: "Observability (logs/metrics/tracing)" },
+  { id: "i_testing",  label: "Testing/QA Automation" },
+  { id: "i_ux_ui",    label: "UX/UI & Design Systems" },
+  { id: "i_cloud",    label: "Cloud (AWS/GCP)" },
+  { id: "i_dist",     label: "Distributed Systems (CQRS/Event Sourcing)" },
 ];
 const STACK_PAIRS = [
-  ["s_py_fastapi","s_postgres"],["s_neo4j","s_pgvector"],["s_langchain","s_llm_apis"],
-  ["s_react_ts","s_node_nest"],["s_docker_k8s_lin","s_ci_cd"],["s_kafka","s_redis_rabbit"],
-  ["s_airflow_dbt","s_terraform"],["s_nginx_traefik","s_observability"],["s_testing","s_security"],
-  ["s_cloud","s_distributed"],
+  ["i_backend","i_frontend"],["i_graph","i_vector"],["i_data_etl","i_devops"],
+  ["i_product","i_integr"],["i_rag","i_agents"],["i_kg","i_db_perf"],
+  ["i_sec","i_observ"],["i_testing","i_ux_ui"],["i_cloud","i_dist"],
 ];
 const STACK_LABEL_BY_ID = Object.fromEntries(STACK_ITEMS.map(x => [x.id, x.label]));
 
