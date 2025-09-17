@@ -85,7 +85,9 @@ async function rCall(path,qs){ const u=rUrl(path); if(qs) for(const[k,v]of Objec
 const rSet=(k,v,qs)=> rCall(`/set/${encodeURIComponent(k)}/${encodeURIComponent(v)}`, qs);
 const rGet=(k)=> rGET(`/get/${encodeURIComponent(k)}`);
 const rDel=(k)=> rGET(`/del/${encodeURIComponent(k)}`);
-const rIncr=async(k,ex=60)=>{ const j=await rGET(`/incr/${encodeURIComponent(k)}`); if(j.result===1) await rGET(`/expire/${encodeURIComponent(k)}/${ex}`); return j.result; };
+const rIncr=async(k,ex=60)=>{ const j=await rGET(`/incr/${encodeURIComponent(k)}`); if(j.result===1 && ex>0) await rGET(`/expire/${encodeURIComponent(k)}/${ex}`); return j.result; };
+// no-TTL increment (для счётчиков без истечения)
+async function rIncrNoTTL(k){ const j = await rGET(`/incr/${encodeURIComponent(k)}`); return j.result; }
 async function seenUpdate(id){ try{ const j=await rSet(`upd:${id}`,"1",{EX:180,NX:true}); return j&&("result"in j)? j.result==="OK" : true; }catch{return true;} }
 async function overRL(uid,limit=12){ try{return (await rIncr(`rl:${uid}`,60))>limit;}catch{return false;} }
 
@@ -217,53 +219,146 @@ async function sendTime(chat, sess){
   });
 }
 
-/* ---------------- Finalize (запись анкеты в основной лист) ---------------- */
-async function runLLM(u, s){
+/* ---------------- LLM оценка кандидата ---------------- */
+function nameRealismScore(name) {
+  const n = (name||"").trim();
+  if (!n) return 0;
+  if (n.length < 2 || n.length > 80) return 10;
+  if (/^[a-zA-Zа-яА-ЯёЁ\-\'\s]+$/.test(n) === false) return 20; // странные символы
+  // бонусы за нормальное “Имя Фамилия”
+  let score = 70;
+  if (/\s/.test(n)) score += 15;
+  if (/^[А-ЯЁA-Z][а-яёa-z]+(?:\s+[А-ЯЁA-Z][а-яёa-z]+)+$/.test(n)) score += 10;
+  return Math.min(score, 95);
+}
+
+function aboutQualityScore(about) {
+  const t = (about||"").trim();
+  if (!t) return 0;
+  let score = 50;
+  if (t.length > 80) score += 10;
+  if (t.length > 200) score += 10;
+  if (/[.!?]\s/.test(t)) score += 10; // фразы
+  if (/(github|gitlab|hh\.ru|linkedin|cv|resume|портфолио|pet)/i.test(t)) score += 10;
+  if (/fuck|дурак|лох|xxx/i.test(t)) score -= 30;
+  return Math.max(0, Math.min(score, 95));
+}
+
+function consistencyScore(about, interests, stack) {
+  const t = (about||"").toLowerCase();
+  const hasTech = (arr)=> (arr||[]).some(x => t.includes(String(x).toLowerCase().split(/[\/\s,]/)[0]||""));
+  let s = 50;
+  if (hasTech(interests)) s += 15;
+  if (hasTech(stack))     s += 15;
+  if (t.length > 100)     s += 10;
+  return Math.min(s, 95);
+}
+
+async function runLLM(u, s, submission_count){
+  // Подготовим подробный prompt под критерии
   const base = {
-    name: s.name || String(u.id),
+    telegram_id: String(u.id),
+    name: s.name || "",
     telegram: s.name || String(u.id),
     roles_hint: s.interests,
     stack_hint: s.stack,
     work_style_raw: {a1:s.a1,a2:s.a2,a3:s.a3},
-    about: s.about,
-    time_zone: "",
-    time_windows: { days: s.time_days, slots: s.time_slots },
-    specific_slots_text: s.specific_slots_text
+    about: s.about || "",
+    submission_count: submission_count || 1,
+    time_zone: s.time_zone || "",
+    time_windows: { days: s.time_days, slots: s.time_slots }
   };
+
+  // Локальные эвристики (на случай падения API)
+  const local = (() => {
+    const nScore  = nameRealismScore(base.name);
+    const aScore  = aboutQualityScore(base.about);
+    const cScore  = consistencyScore(base.about, base.roles_hint, base.stack_hint);
+    const repPenalty = Math.max(0, (base.submission_count-1) * 5); // за каждую повторную попытку -5
+    let total = Math.round(Math.max(0, Math.min(100, (nScore*0.25 + aScore*0.45 + cScore*0.30) - repPenalty)));
+    const bucket = total>=80?"сильный кандидат": total>=65?"хороший кандидат": total>=50?"пограничный": "слабый";
+    const summary =
+`Оценка: ${total}/100 (${bucket}).
+• Реалистичность имени: ${nScore}/100.
+• Качество “о себе”: ${aScore}/100.
+• Согласованность с интересами/стеком: ${cScore}/100.
+• Повторных заполнений: ${base.submission_count-1}.
+Вывод: ${total>=50?"в целом по делу, материал пригоден для контакта":"ответы хаотичные, мало подтверждений компетенций"}.`;
+    return { fit_score: total, summary };
+  })();
+
   if (!OPENAI_API_KEY) {
     return {
-      name: base.name, telegram: base.telegram,
-      roles: (s.interests||[]).slice(0,2).map(x=>x.toLowerCase().includes("graph")?"graph":x.toLowerCase().includes("vector")?"vector":x.toLowerCase().includes("devops")?"devops":"backend"),
-      stack: (s.stack||[]).slice(0,3),
-      work_style: {builder:0.6,architect:0.2,researcher:0.1,operator:0.1,integrator:0.2},
-      fit_score: 65,
-      time_commitment: ((s.time_days?.length || 0) + (s.time_slots?.length || 0)) >= 5 ? "11–20ч" :
-                       ((s.time_days?.length || 0) + (s.time_slots?.length || 0)) >= 3 ? "6–10ч" : "≤5ч",
-      time_zone: "",
-      time_windows: base.time_windows,
-      specific_slots_text: s.specific_slots_text || "",
-      links: [],
-      summary: "Стабильный кандидат. Подходит на бэкенд/интеграции."
+      ...local,
+      roles: (s.interests||[]).slice(0,3),
+      stack: (s.stack||[]).slice(0,5),
+      work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
+      time_commitment: ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=5 ? "11–20ч" :
+                       ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=3 ? "6–10ч" : "≤5ч",
     };
   }
+
   try {
+    const SYSTEM = [
+      "Ты строгий технический рекрутер. Верни СТРОГО JSON (без текста снаружи).",
+      "Твоя задача: оценить анкету кандидата по критериям и выдать summary + итоговую бальную оценку 0–100.",
+      "Правила баллов:",
+      "1) Повторы заполнения — чем больше, тем хуже (каждый повтор -5 от общего).",
+      "2) Реалистичность имени (внешний вид человеческого имени/фамилии).",
+      "3) Адекватность и развернутость ответа «о себе» (структурность, конкретные достижения, ссылки).",
+      "4) Согласованность «о себе» с заявленными интересами и стеком (не противоречит ли).",
+      "100 — максимум; >50 — по делу и осмысленно; <50 — сумбур/чушь.",
+      "Схема ответа JSON:",
+      '{ "fit_score": 0..100, "summary": "подробный текст 2-5 абзацев", "roles": [...], "stack": [...], "work_style": {"builder":0..1,"architect":0..1,"researcher":0..1,"operator":0..1,"integrator":0..1}, "time_commitment": "≤5ч|6–10ч|11–20ч|>20ч" }',
+      "Никаких пояснений вне JSON."
+    ].join("\n");
+
+    const USER = [
+      "Анкета:", JSON.stringify(base, null, 2),
+      "Подсказка: roles_hint — интересы, stack_hint — стек."
+    ].join("\n");
+
     const body = {
-      model: OPENAI_MODEL, temperature: 0,
-      response_format: { type:"json_object" },
+      model: OPENAI_MODEL,
+      temperature: 0,
+      response_format: { type: "json_object" },
       messages: [
-        { role:"system", content: "Сформируй JSON с полями: name, telegram, roles[], stack[], work_style{...}, fit_score, time_commitment, time_zone, time_windows[], specific_slots_text, links[], summary" },
-        { role:"user", content: JSON.stringify(base) }
+        { role: "system", content: SYSTEM },
+        { role: "user",   content: USER   }
       ]
     };
+
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method:"POST",
       headers:{ "content-type":"application/json","authorization":"Bearer "+OPENAI_API_KEY },
       body: JSON.stringify(body)
     }).then(x=>x.json()).catch(()=>null);
-    return JSON.parse(r?.choices?.[0]?.message?.content || "null");
-  } catch { return null; }
+
+    const parsed = JSON.parse(r?.choices?.[0]?.message?.content || "null");
+    if (!parsed || typeof parsed.fit_score !== "number" || !parsed.summary) {
+      return {
+        ...local,
+        roles: (s.interests||[]).slice(0,3),
+        stack: (s.stack||[]).slice(0,5),
+        work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
+        time_commitment: ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=5 ? "11–20ч" :
+                         ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=3 ? "6–10ч" : "≤5ч",
+      };
+    }
+    return parsed;
+  } catch {
+    return {
+      ...local,
+      roles: (s.interests||[]).slice(0,3),
+      stack: (s.stack||[]).slice(0,5),
+      work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
+      time_commitment: ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=5 ? "11–20ч" :
+                       ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=3 ? "6–10ч" : "≤5ч",
+    };
+  }
 }
 
+/* ---------------- Запись строки в Sheets ---------------- */
 async function appendSheets(row){
   if (!SHEETS_URL || !SHEETS_SECRET) return {ok:false, skipped:true};
   const res = await fetch(SHEETS_URL, {
@@ -273,11 +368,23 @@ async function appendSheets(row){
   return res;
 }
 
+/* ---------------- Финализация анкеты ---------------- */
 async function finalize(chat, user, s) {
   try {
-    const llm = await runLLM(user, s) || {};
-    const nowISO = new Date().toISOString();
+    // 1) сколько раз уже заполнял (persist в Redis без TTL)
+    const cntKey = `forms:${user.id}:count`;
+    let cnt = 0;
+    try {
+      const j = await rGet(cntKey);
+      cnt = Number(j?.result || 0) || 0;
+    } catch {}
+    const submission_count = cnt + 1;
 
+    // 2) LLM оценка с учётом submission_count
+    const llm = await runLLM(user, s, submission_count) || {};
+
+    // 3) Готовим строку для Sheets
+    const nowISO = new Date().toISOString();
     const row = [
       nowISO,
       s.run_id || "",
@@ -297,7 +404,7 @@ async function finalize(chat, user, s) {
       s.specific_slots_text || (llm.specific_slots_text || ""),
       JSON.stringify(llm || {}),
       typeof llm.fit_score === "number" ? llm.fit_score : 65,
-      JSON.stringify(llm.roles || []),
+      JSON.stringify(llm.roles || s.interests || []),
       JSON.stringify(llm.stack || s.stack || []),
       JSON.stringify(llm.work_style || {}),
       llm.time_commitment || (((s.time_days?.length||0)+(s.time_slots?.length||0))>=5 ? "11–20ч" : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч"),
@@ -305,15 +412,21 @@ async function finalize(chat, user, s) {
       llm.summary || "Сохранено."
     ];
 
+    // 4) Пишем строку
     await appendSheets(row);
 
+    // 5) Инкрементируем счётчик заполнений (без TTL)
+    try { await rIncrNoTTL(cntKey); } catch {}
+
+    // 6) Сообщаем пользователю
     const days  = (s.time_days||[]).join(", ") || "—";
     const slots = (s.time_slots||[]).join(", ") || "—";
     await tg("sendMessage", {
       chat_id: chat,
-      text: `Готово! Анкета записана ✅\nДни: ${days}\nСлоты: ${slots}`
+      text: `Готово! Анкета записана ✅\nОценка: ${llm.fit_score ?? "—"}/100\n\n${(llm.summary||"").slice(0,1200)}\n\nДни: ${days}\nСлоты: ${slots}`
     });
 
+    // 7) Завершаем сессию
     s.step = "done";
     await rSet(`sess:${user.id}`, JSON.stringify(s), { EX: 600 });
     await rDel(`sess:${user.id}`);
@@ -573,7 +686,6 @@ async function onCallback(q) {
   if (tooFast) { await answerCb("Слишком часто. Секунду…"); return; }
 
   const chat = q.message.chat.id;
-  const mid  = q.message.message_id;
 
   let s = await getSess(uid);
 
@@ -584,14 +696,14 @@ async function onCallback(q) {
     if (s.step !== "consent") { await answerCb(); return; }
     s.consent = "yes"; s.step = "name";
     await putSess(uid, s);
-    try { await tg("editMessageText", { chat_id: chat, message_id: mid, text: "✅ спасибо за согласие на связь", parse_mode: "HTML" }); } catch {}
+    try { await tg("editMessageText", { chat_id: chat, message_id: q.message.message_id, text: "✅ спасибо за согласие на связь", parse_mode: "HTML" }); } catch {}
     await sendName(chat, uid);
     await answerCb();
     return;
   }
   if (data === "consent_no") {
     if (s.step !== "consent") { await answerCb(); return; }
-    try { await tg("editMessageText", { chat_id: chat, message_id: mid, text: "ок. если передумаешь — /start" }); } catch {}
+    try { await tg("editMessageText", { chat_id: chat, message_id: q.message.message_id, text: "ок. если передумаешь — /start" }); } catch {}
     await delSess(uid);
     await answerCb();
     return;
@@ -618,7 +730,7 @@ async function onCallback(q) {
     if (idx >= 0) {
       s.interests.splice(idx, 1);
       await putSess(uid, s);
-      await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbInterests(s.interests) });
+      await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbInterests(s.interests) });
       await answerCb();
       return;
     }
@@ -626,7 +738,7 @@ async function onCallback(q) {
 
     s.interests.push(label);
     await putSess(uid, s);
-    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbInterests(s.interests) });
+    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbInterests(s.interests) });
     await answerCb();
     return;
   }
@@ -648,7 +760,7 @@ async function onCallback(q) {
     if (idx >= 0) {
       s.stack.splice(idx, 1);
       await putSess(uid, s);
-      await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbStack(s.stack) });
+      await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbStack(s.stack) });
       await answerCb();
       return;
     }
@@ -656,7 +768,7 @@ async function onCallback(q) {
 
     s.stack.push(label);
     await putSess(uid, s);
-    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbStack(s.stack) });
+    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbStack(s.stack) });
     await answerCb();
     return;
   }
@@ -678,7 +790,7 @@ async function onCallback(q) {
     const day = data.slice(4);
     const i=s.time_days.indexOf(day); if(i>=0) s.time_days.splice(i,1); else s.time_days.push(day);
     await putSess(uid, s);
-    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbTimeDaysSlots(s) });
+    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbTimeDaysSlots(s) });
     await answerCb();
     return;
   }
@@ -687,7 +799,7 @@ async function onCallback(q) {
     const slot = data.slice(4);
     const i=s.time_slots.indexOf(slot); if(i>=0) s.time_slots.splice(i,1); else s.time_slots.push(slot);
     await putSess(uid, s);
-    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: mid, reply_markup: kbTimeDaysSlots(s) });
+    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbTimeDaysSlots(s) });
     await answerCb();
     return;
   }
