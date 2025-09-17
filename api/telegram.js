@@ -419,12 +419,16 @@ async function finalize(chat, user, s) {
     try { await rIncrNoTTL(cntKey); } catch {}
 
     // 6) Сообщаем пользователю
+    // 6) Сообщаем пользователю (без оценки и summary)
     const days  = (s.time_days||[]).join(", ") || "—";
     const slots = (s.time_slots||[]).join(", ") || "—";
     await tg("sendMessage", {
       chat_id: chat,
-      text: `Готово! Анкета записана ✅\nОценка: ${llm.fit_score ?? "—"}/100\n\n${(llm.summary||"").slice(0,1200)}\n\nДни: ${days}\nСлоты: ${slots}`
+      text: `готово! анкета записана ✅
+    Дни: ${days}
+    Слоты: ${slots}`
     });
+
 
     // 7) Завершаем сессию
     s.step = "done";
