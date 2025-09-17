@@ -39,28 +39,28 @@ const INTEREST_ITEMS = [
   { id: "i_dist",     label: "Distributed Systems (CQRS/Event Sourcing)" },
 ];
 const INTEREST_PAIRS = [
-  ["i_backend", "i_frontend"], ["i_graph", "i_vector"], ["i_data_etl", "i_devops"],
-  ["i_product", "i_integr"], ["i_rag", "i_agents"], ["i_kg", "i_db_perf"],
-  ["i_sec", "i_observ"], ["i_testing", "i_ux_ui"], ["i_cloud", "i_dist"],
+  ["i_backend","i_frontend"],["i_graph","i_vector"],["i_data_etl","i_devops"],
+  ["i_product","i_integr"],["i_rag","i_agents"],["i_kg","i_db_perf"],
+  ["i_sec","i_observ"],["i_testing","i_ux_ui"],["i_cloud","i_dist"],
 ];
 const LABEL_BY_ID = Object.fromEntries(INTEREST_ITEMS.map(x => [x.id, x.label]));
 
 const STACK_ITEMS = [
-  { id: "s_py_fastapi",    label: "Python/FastAPI" }, { id: "s_postgres",      label: "PostgreSQL/SQL" },
-  { id: "s_neo4j",         label: "Neo4j" },           { id: "s_pgvector",      label: "pgvector" },
-  { id: "s_langchain",     label: "LangChain/LangGraph" }, { id: "s_llm_apis",      label: "LLM APIs (OpenAI/Claude/etc.)" },
-  { id: "s_react_ts",      label: "React/TypeScript" }, { id: "s_node_nest",     label: "Node.js/NestJS" },
-  { id: "s_docker_k8s_lin",label: "Docker/Kubernetes/Linux" }, { id: "s_ci_cd",         label: "CI/CD (GitHub Actions/GitLab)" },
-  { id: "s_kafka",         label: "Kafka/Redpanda" }, { id: "s_redis_rabbit",  label: "Redis/RabbitMQ" },
-  { id: "s_airflow_dbt",   label: "Airflow/dbt" },    { id: "s_terraform",     label: "Terraform/Ansible" },
-  { id: "s_nginx_traefik", label: "Nginx/Traefik" },  { id: "s_observability", label: "Observability (Prometheus/Grafana/OTel)" },
-  { id: "s_testing",       label: "Testing (pytest/Playwright)" }, { id: "s_security",      label: "Security (SSO/RBAC/Secrets)" },
-  { id: "s_cloud",         label: "Cloud (AWS/GCP)" }, { id: "s_distributed",   label: "Distributed Systems (CQRS/Event Sourcing)" },
+  { id: "s_py_fastapi", label: "Python/FastAPI" }, { id: "s_postgres", label: "PostgreSQL/SQL" },
+  { id: "s_neo4j", label: "Neo4j" }, { id: "s_pgvector", label: "pgvector" },
+  { id: "s_langchain", label: "LangChain/LangGraph" }, { id: "s_llm_apis", label: "LLM APIs (OpenAI/Claude/etc.)" },
+  { id: "s_react_ts", label: "React/TypeScript" }, { id: "s_node_nest", label: "Node.js/NestJS" },
+  { id: "s_docker_k8s_lin", label: "Docker/Kubernetes/Linux" }, { id: "s_ci_cd", label: "CI/CD (GitHub Actions/GitLab)" },
+  { id: "s_kafka", label: "Kafka/Redpanda" }, { id: "s_redis_rabbit", label: "Redis/RabbitMQ" },
+  { id: "s_airflow_dbt", label: "Airflow/dbt" }, { id: "s_terraform", label: "Terraform/Ansible" },
+  { id: "s_nginx_traefik", label: "Nginx/Traefik" }, { id: "s_observability", label: "Observability (Prometheus/Grafana/OTel)" },
+  { id: "s_testing", label: "Testing (pytest/Playwright)" }, { id: "s_security", label: "Security (SSO/RBAC/Secrets)" },
+  { id: "s_cloud", label: "Cloud (AWS/GCP)" }, { id: "s_distributed", label: "Distributed Systems (CQRS/Event Sourcing)" },
 ];
 const STACK_PAIRS = [
-  ["s_py_fastapi","s_postgres"], ["s_neo4j","s_pgvector"], ["s_langchain","s_llm_apis"],
-  ["s_react_ts","s_node_nest"], ["s_docker_k8s_lin","s_ci_cd"], ["s_kafka","s_redis_rabbit"],
-  ["s_airflow_dbt","s_terraform"], ["s_nginx_traefik","s_observability"], ["s_testing","s_security"],
+  ["s_py_fastapi","s_postgres"],["s_neo4j","s_pgvector"],["s_langchain","s_llm_apis"],
+  ["s_react_ts","s_node_nest"],["s_docker_k8s_lin","s_ci_cd"],["s_kafka","s_redis_rabbit"],
+  ["s_airflow_dbt","s_terraform"],["s_nginx_traefik","s_observability"],["s_testing","s_security"],
   ["s_cloud","s_distributed"],
 ];
 const STACK_LABEL_BY_ID = Object.fromEntries(STACK_ITEMS.map(x => [x.id, x.label]));
@@ -74,6 +74,7 @@ const MAX_STACK     = 7;
 
 const RL_TOGGLE_PER_MIN  = 120;
 const RL_DEFAULT_PER_MIN = 30;
+
 const TIME_DAYS  = ["понедельник","вторник","среда","четверг"];
 const TIME_SLOTS = ["11:00–13:00","13:00–15:00","15:00–16:00","17:00–19:00"];
 
@@ -177,7 +178,13 @@ function kbTimeDaysSlots(sess){
 
 /* ---------------- Screens ---------------- */
 async function sendWelcome(chat, uid) {
-  await tg("sendMessage", { chat_id: chat, text: `старт в команде со-основателей...`, parse_mode: "HTML", reply_markup: kbConsent() });
+  await tg("sendMessage", { chat_id: chat, text:
+`старт в команде со-основателей: партнерская доля, право голоса в архитектуре и темп, соответствующий уровню задач 🔥🤝
+ядро продукта формируется сейчас — редкий шанс зайти в проект, который сшивает три мира 🧠✨
+промышленный «операционный интеллект» меняет правила в работе с данными: от хаоса файлов и чатов — к системе, где решения рождаются за секунды, а не за недели 🏭⚙️⏱️
+итог — платформа, которая ускоряет решения на порядки и может переобучать сам бизнес действовать умнее 📈⚡️
+формат потенциального взаимодействия - доля и партнёрство: больше влияния, больше ответственности, быстрее рост 🤝📈🚀`,
+    parse_mode: "HTML", reply_markup: kbConsent() });
 }
 async function sendName(chat, uid) { await tg("sendMessage", { chat_id: chat, text: "2) как к тебе обращаться? введи имя текстом", parse_mode: "HTML", reply_markup: kbName() }); }
 async function sendAge(chat, uid, s) { await tg("sendMessage", { chat_id: chat, text: "3) укажи возраст:", parse_mode: "HTML", reply_markup: kbSingle("age", AGE_OPTIONS) }); }
@@ -210,7 +217,7 @@ async function sendTime(chat, sess){
   });
 }
 
-/* ---------------- Finalize (анкета пользователя) ---------------- */
+/* ---------------- Finalize (запись анкеты в основной лист) ---------------- */
 async function runLLM(u, s){
   const base = {
     name: s.name || String(u.id),
@@ -239,8 +246,22 @@ async function runLLM(u, s){
       summary: "Стабильный кандидат. Подходит на бэкенд/интеграции."
     };
   }
-  // реальный LLM вызывали раньше; опускаю ради краткости
-  return null;
+  try {
+    const body = {
+      model: OPENAI_MODEL, temperature: 0,
+      response_format: { type:"json_object" },
+      messages: [
+        { role:"system", content: "Сформируй JSON с полями: name, telegram, roles[], stack[], work_style{...}, fit_score, time_commitment, time_zone, time_windows[], specific_slots_text, links[], summary" },
+        { role:"user", content: JSON.stringify(base) }
+      ]
+    };
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method:"POST",
+      headers:{ "content-type":"application/json","authorization":"Bearer "+OPENAI_API_KEY },
+      body: JSON.stringify(body)
+    }).then(x=>x.json()).catch(()=>null);
+    return JSON.parse(r?.choices?.[0]?.message?.content || "null");
+  } catch { return null; }
 }
 
 async function appendSheets(row){
@@ -250,6 +271,56 @@ async function appendSheets(row){
     body: JSON.stringify({ secret: SHEETS_SECRET, op:"append", row })
   }).then(x=>x.json()).catch(()=>({ok:false}));
   return res;
+}
+
+async function finalize(chat, user, s) {
+  try {
+    const llm = await runLLM(user, s) || {};
+    const nowISO = new Date().toISOString();
+
+    const row = [
+      nowISO,
+      s.run_id || "",
+      s.started_at || "",
+      user?.username ? ("@"+user.username) : String(user?.id || ""),
+      String(user?.id || ""),
+      s.consent || "yes",
+      s.name || "",
+      JSON.stringify(s.interests || []),
+      JSON.stringify(s.stack || []),
+      s.a1 || "",
+      s.a2 || "",
+      s.a3 || "",
+      s.about || "",
+      llm.time_zone || s.time_zone || "",
+      JSON.stringify({ days: s.time_days || [], slots: s.time_slots || [] }),
+      s.specific_slots_text || (llm.specific_slots_text || ""),
+      JSON.stringify(llm || {}),
+      typeof llm.fit_score === "number" ? llm.fit_score : 65,
+      JSON.stringify(llm.roles || []),
+      JSON.stringify(llm.stack || s.stack || []),
+      JSON.stringify(llm.work_style || {}),
+      llm.time_commitment || (((s.time_days?.length||0)+(s.time_slots?.length||0))>=5 ? "11–20ч" : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч"),
+      JSON.stringify(llm.links || []),
+      llm.summary || "Сохранено."
+    ];
+
+    await appendSheets(row);
+
+    const days  = (s.time_days||[]).join(", ") || "—";
+    const slots = (s.time_slots||[]).join(", ") || "—";
+    await tg("sendMessage", {
+      chat_id: chat,
+      text: `Готово! Анкета записана ✅\nДни: ${days}\nСлоты: ${slots}`
+    });
+
+    s.step = "done";
+    await rSet(`sess:${user.id}`, JSON.stringify(s), { EX: 600 });
+    await rDel(`sess:${user.id}`);
+  } catch (e) {
+    console.error("finalize error:", e?.message || String(e));
+    await tg("sendMessage", { chat_id: chat, text: "⚠️ Не удалось сохранить. Попробуй ещё раз: /start" });
+  }
 }
 
 /* ---------------- Entry ---------------- */
@@ -445,7 +516,6 @@ async function onCallback(q) {
     if (action === "stop") { await answerCb("Остановлено"); return; }
 
     if (action === "yes") {
-      // забираем анкету и сохраняем в Candidates
       const j = await writer("look_fetch", { index: idx });
       if (j?.ok && j.row) {
         await writer("candidate_add_obj", { row: j.row, marked_by: uid });
@@ -456,7 +526,6 @@ async function onCallback(q) {
     }
 
     await answerCb();
-    // следующий
     await sendLookCard(q.message.chat.id, idx + 1);
     return;
   }
@@ -594,7 +663,7 @@ async function onCallback(q) {
       return;
     }
     await answerCb("Секунду, записываю…");
-    // финализация анкеты пользователя была выше (опускаю для краткости)
+    await finalize(chat, { id: uid, username: q.from.username }, s);
     return;
   }
 }
