@@ -435,14 +435,23 @@ async function sendLookCard(chat, index){
 
 /* ---------------- Handlers ---------------- */
 async function onMessage(m){
-  const uid  = m.from.id; if(await overRL(uid)) return;
+  const uid  = m.from.id;
   const chat = m.chat.id;
   const text = (m.text || "").trim();
 
-  // админ-команды (старые)
+  // Админ-команды — без rate-limit
   if (text.startsWith("/")) {
     const handled = await handleAdminCommand({ text, uid, chat }, tg);
     if (handled) return;
+  }
+
+  // Получаем сессию и решаем, применять ли RL
+  const s = await getSess(uid);
+  const isFreeTextStep = (s.step === "name" || s.step === "about");
+
+  // На шагах name/about НЕ троттлим — чтобы длинные тексты не «зависали»
+  if (!isFreeTextStep) {
+    if (await overRL(uid)) return;
   }
 
   // /look — админский просмотр
@@ -462,7 +471,6 @@ async function onMessage(m){
       await tg("sendMessage",{chat_id:chat,text:`Нужен ключ доступа. Открой ссылку:\nhttps://t.me/rgnr_assistant_bot?start=${encodeURIComponent(START_SECRET||"INVITE")}`});
       return;
     }
-    const s=await getSess(uid);
     if (s.step && s.step!=="consent"){
       await tg("sendMessage",{chat_id:chat,text:"Анкета уже начата — продолжать или начать заново?",reply_markup:kbContinueReset()});
       return;
@@ -470,7 +478,6 @@ async function onMessage(m){
     const s2 = makeNew(); await putSess(uid,s2); await sendWelcome(chat,uid); return;
   }
 
-  const s=await getSess(uid);
   if (s.step==="name"){
     s.name = text.slice(0,80);
     s.step = "age";
@@ -479,7 +486,13 @@ async function onMessage(m){
     return;
   }
 
-  if (s.step==="about"){ s.about=text.slice(0,1200); s.step="time"; await putSess(uid,s); await sendTime(chat,s); return; }
+  if (s.step==="about"){
+    s.about = text.slice(0,1200);
+    s.step  = "time";
+    await putSess(uid, s);
+    await sendTime(chat, s);
+    return;
+  }
 
   if (s.step === "interests" && text && !text.startsWith("/")) {
     s.other_interests = s.other_interests || [];
@@ -488,6 +501,7 @@ async function onMessage(m){
     await tg("sendMessage", { chat_id: chat, text: "Добавил в список. Можешь отметить чекбоксы и/или нажать «ДАЛЬШЕ ➜»." });
     return;
   }
+
   if (s.step === "stack" && text && !text.startsWith("/")) {
     s.other_stack = s.other_stack || [];
     if (s.other_stack.length < 5) s.other_stack.push(text.slice(0, 120));
@@ -518,7 +532,7 @@ async function onCallback(q) {
     if (action === "yes") {
       const j = await writer("look_fetch", { index: idx });
       if (j?.ok && j.row) {
-        // --- FIX: готовим чистую строку и проверяем результат добавления ---
+        // Чистим строку по списку полей и пишем в Candidates
         const HEADERS = [
           "timestamp","run_id","started_at","telegram","telegram_id",
           "q1_consent","q2_name","q3_interests","q4_stack",
@@ -529,7 +543,6 @@ async function onCallback(q) {
         ];
         const rowClean = {};
         for (const h of HEADERS) rowClean[h] = (j.row[h] !== undefined && j.row[h] !== null) ? j.row[h] : "";
-
         let j2;
         try {
           j2 = await writer("candidate_add_obj", { row: rowClean, marked_by: String(uid) });
@@ -541,7 +554,6 @@ async function onCallback(q) {
         } else if (j2 && !j2.ok) {
           await tg("sendMessage", { chat_id: q.message.chat.id, text: `❌ Не добавлено: ${j2.reason || "unknown"}` });
         }
-        // ---------------------------------------------------------------
       } else {
         await tg("sendMessage", { chat_id: q.message.chat.id, text: "❌ Не удалось получить анкету" });
       }
