@@ -518,8 +518,32 @@ async function onCallback(q) {
     if (action === "yes") {
       const j = await writer("look_fetch", { index: idx });
       if (j?.ok && j.row) {
-        await writer("candidate_add_obj", { row: j.row, marked_by: uid });
-        await tg("sendMessage", { chat_id: q.message.chat.id, text: "✅ Добавлено в кандидаты" });
+        // --- FIX: готовим чистую строку и проверяем результат добавления ---
+        const HEADERS = [
+          "timestamp","run_id","started_at","telegram","telegram_id",
+          "q1_consent","q2_name","q3_interests","q4_stack",
+          "q5_a1","q5_a2","q5_a3","q6_about",
+          "q7_time_zone","q7_time_windows","q7_specific_slots",
+          "llm_json","fit_score","roles","stack","work_style_json",
+          "time_commitment","links","summary"
+        ];
+        const rowClean = {};
+        for (const h of HEADERS) rowClean[h] = (j.row[h] !== undefined && j.row[h] !== null) ? j.row[h] : "";
+
+        let j2;
+        try {
+          j2 = await writer("candidate_add_obj", { row: rowClean, marked_by: String(uid) });
+        } catch (e) {
+          await tg("sendMessage", { chat_id: q.message.chat.id, text: `❌ Ошибка записи в Candidates: ${e?.message || e}` });
+        }
+        if (j2?.ok) {
+          await tg("sendMessage", { chat_id: q.message.chat.id, text: "✅ Добавлено в кандидаты" });
+        } else if (j2 && !j2.ok) {
+          await tg("sendMessage", { chat_id: q.message.chat.id, text: `❌ Не добавлено: ${j2.reason || "unknown"}` });
+        }
+        // ---------------------------------------------------------------
+      } else {
+        await tg("sendMessage", { chat_id: q.message.chat.id, text: "❌ Не удалось получить анкету" });
       }
     } else {
       await tg("sendMessage", { chat_id: q.message.chat.id, text: "⏭️ Пропущено" });
