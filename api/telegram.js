@@ -1,5 +1,7 @@
 // api/telegram.js — Telegram webhook (Vercel, Node 20, ESM)
 import { handleAdminCommand } from "./admin-commands.js";
+import { handleAdminAgentMessage, handleAdminAgentCallback } from "./admin-agent.js";
+
 
 const TOKEN        = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID     = process.env.ADMIN_CHAT_ID || "";
@@ -568,7 +570,9 @@ async function onMessage(m){
     const handled = await handleAdminCommand({ text, uid, chat }, tg);
     if (handled) return;
   }
-
+  // mini-agent (admin-only). Возвращает true, если сообщение обработано
+  if (await handleAdminAgentMessage({ text, uid, chat }, tg, writer)) return;
+  
   // Получаем сессию и решаем, применять ли RL
   const s = await getSess(uid);
   const isFreeTextStep = (s.step === "name" || s.step === "about");
@@ -644,6 +648,9 @@ async function onCallback(q) {
   const answerCb = (text = "", alert = false) =>
     tg("answerCallbackQuery", { callback_query_id: q.id, text, show_alert: alert });
 
+  if (await handleAdminAgentCallback(q, tg, writer)) return;
+
+  
   // LOOK callbacks (админ)
   if (data.startsWith("look:")) {
     if (!isAdmin(uid)) { await answerCb(); return; }
