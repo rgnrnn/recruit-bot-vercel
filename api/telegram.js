@@ -641,6 +641,12 @@ async function onMessage(m){
   await tg("sendMessage",{chat_id:chat,text:NO_CHAT,reply_markup:kbContinueReset()});
 }
 
+
+
+
+
+
+
 async function onCallback(q) {
   const uid  = q.from.id;
   const data = q.data || "";
@@ -648,9 +654,24 @@ async function onCallback(q) {
   const answerCb = (text = "", alert = false) =>
     tg("answerCallbackQuery", { callback_query_id: q.id, text, show_alert: alert });
 
+  // 🔹 ФИКС: ответы кандидатов на приглашение принимаем для всех (не только для админа)
+  if (/^invite:(yes|no):/.test(data)) {
+    const m = data.match(/^invite:(yes|no):(.+)$/);
+    const status = m[1] === "yes" ? "accepted" : "declined";
+    const inviteId = m[2];
+
+    try {
+      await writer("invite_answer_log", { invite_id: inviteId, status });
+      await answerCb(status === "accepted" ? "Принято ✅" : "Отклонено ❌");
+    } catch (e) {
+      await answerCb("Ошибка, попробуйте ещё раз", true);
+    }
+    return; // дальше не идём
+  }
+
+  // mini-agent callbacks (только для админа)
   if (await handleAdminAgentCallback(q, tg, writer)) return;
 
-  
   // LOOK callbacks (админ)
   if (data.startsWith("look:")) {
     if (!isAdmin(uid)) { await answerCb(); return; }
