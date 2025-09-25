@@ -661,8 +661,25 @@ async function onCallback(q) {
     const inviteId = m[2];
 
     try {
+      // 1) логируем ответ в Google Sheets
       await writer("invite_answer_log", { invite_id: inviteId, status });
+
+      // 2) подтверждаем нажатие кнопки (чтобы исчезли «часики»)
       await answerCb(status === "accepted" ? "Принято ✅" : "Отклонено ❌");
+
+      // 3) если кандидат нажал «Да» — отправляем follow-up сообщение со ссылкой на анкету
+      if (status === "accepted") {
+        const followup =
+`Привет ещё раз! Спасибо за интерес к проекту и «синюю кнопку».
+Дальше — этап взаимного выбора: большая анкета для партнёров, а не просто исполнителей.
+Нам важно увидеть твой стиль решения задач под нагрузкой и отношение к людям.
+Мы строим инструмент «на годы» — ищем людей с длинным горизонтом, дисциплиной и уважением к времени команды.
+Пиши примеры из реальной практики, прикладывай ссылки на результаты (код/PR/доклады).
+Ответы проверяются на последовательность — пытаться «приукрасить» не нужно; честность важнее идеальности.
+Данные конфиденциальны; после анализа — следующий шаг.
+Перейти к анкете: https://docs.google.com/forms/d/e/1FAIpQLSffh081Qv_UXdrFAT0112ehjPHzgY2OhgbXv-htShFJyOgJcA/viewform?usp=sharing&ouid=116560134951115143298`;
+        await tg("sendMessage", { chat_id: q.message.chat.id, text: followup });
+      }
     } catch (e) {
       await answerCb("Ошибка, попробуйте ещё раз", true);
     }
@@ -773,7 +790,7 @@ async function onCallback(q) {
       await answerCb();
       return;
     }
-    if ((s.interests?.length || 0) >= MAX_INTERESTS) { await answerCb(`можно выбрать не более ${MAX_INTERESTS} пунктов`); return; }
+    if ((s.interests?.length || 0) >= MAX_INTERESTS) { await answerCb(`можно выбрать не более ${MAX_INTERЕSTS} пунктов`); return; }
 
     s.interests.push(label);
     await putSess(uid, s);
@@ -821,13 +838,13 @@ async function onCallback(q) {
   // A1/A2/A3
   if (data.startsWith("a1:")) { if (s.step !== "a1") { await answerCb(); return; } s.a1 = data.split(":")[1]; s.step = "a2"; await putSess(uid, s); await sendA2(chat); await answerCb(); return; }
   if (data.startsWith("a2:")) { if (s.step !== "a2") { await answerCb(); return; } s.a2 = data.split(":")[1]; s.step = "a3"; await putSess(uid, s); await sendA3(chat); await answerCb(); return; }
-  if (data.startsWith("a3:")) { if (s.step !== "a3") { await answerCb(); return; } s.a3 = data.split(":")[1]; s.step = "about"; await putSess(uid, s); await sendAbout(chat); await answerCb(); return; }
+  if (data.startsWith("a3:")) { if (с.step !== "a3") { await answerCb(); return; } s.a3 = data.split(":")[1]; s.step = "about"; await putSess(uid, s); await sendAbout(chat); await answerCb(); return; }
 
   // Q7: дни/слоты и ГОТОВО (польз.)
   if (data.startsWith("q7d:")) {
     if (s.step !== "time") { await answerCb(); return; }
     const day = data.slice(4);
-    const i=s.time_days.indexOf(day); if(i>=0) s.time_days.splice(i,1); else s.time_days.push(day);
+    const i=s.time_days.indexOf(day); if(i>=0) s.time_days.splice(i,1); else с.time_days.push(day);
     await putSess(uid, s);
     await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbTimeDaysSlots(s) });
     await answerCb();
@@ -854,3 +871,4 @@ async function onCallback(q) {
     return;
   }
 }
+
