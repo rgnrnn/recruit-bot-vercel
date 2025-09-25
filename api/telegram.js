@@ -647,6 +647,8 @@ async function onMessage(m){
 
 
 
+
+
 async function onCallback(q) {
   const uid  = q.from.id;
   const data = q.data || "";
@@ -790,7 +792,8 @@ async function onCallback(q) {
       await answerCb();
       return;
     }
-    if ((s.interests?.length || 0) >= MAX_INTERESTS) { await answerCb(`можно выбрать не более ${MAX_INTERЕSTS} пунктов`); return; }
+    // 🔧 здесь была опечатка MAX_INTERЕSTS (кириллич. Е). Должно быть:
+    if ((s.interests?.length || 0) >= MAX_INTERESTS) { await answerCb(`можно выбрать не более ${MAX_INTERESTS} пунктов`); return; }
 
     s.interests.push(label);
     await putSess(uid, s);
@@ -838,13 +841,18 @@ async function onCallback(q) {
   // A1/A2/A3
   if (data.startsWith("a1:")) { if (s.step !== "a1") { await answerCb(); return; } s.a1 = data.split(":")[1]; s.step = "a2"; await putSess(uid, s); await sendA2(chat); await answerCb(); return; }
   if (data.startsWith("a2:")) { if (s.step !== "a2") { await answerCb(); return; } s.a2 = data.split(":")[1]; s.step = "a3"; await putSess(uid, s); await sendA3(chat); await answerCb(); return; }
-  if (data.startsWith("a3:")) { if (с.step !== "a3") { await answerCb(); return; } s.a3 = data.split(":")[1]; s.step = "about"; await putSess(uid, s); await sendAbout(chat); await answerCb(); return; }
+  if (data.startsWith("a3:")) {
+    // 🔧 здесь была русская "с" в "с.step" — поменял на латинскую s
+    if (s.step !== "a3") { await answerCb(); return; }
+    s.a3 = data.split(":")[1]; s.step = "about"; await putSess(uid, s); await sendAbout(chat); await answerCb(); return;
+  }
 
   // Q7: дни/слоты и ГОТОВО (польз.)
   if (data.startsWith("q7d:")) {
     if (s.step !== "time") { await answerCb(); return; }
     const day = data.slice(4);
-    const i=s.time_days.indexOf(day); if(i>=0) s.time_days.splice(i,1); else с.time_days.push(day);
+    const i = s.time_days.indexOf(day);
+    if (i>=0) s.time_days.splice(i,1); else s.time_days.push(day); // 🔧 здесь тоже была русская "с"
     await putSess(uid, s);
     await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbTimeDaysSlots(s) });
     await answerCb();
@@ -853,7 +861,8 @@ async function onCallback(q) {
   if (data.startsWith("q7s:")) {
     if (s.step !== "time") { await answerCb(); return; }
     const slot = data.slice(4);
-    const i=s.time_slots.indexOf(slot); if(i>=0) s.time_slots.splice(i,1); else s.time_slots.push(slot);
+    const i = s.time_slots.indexOf(slot);
+    if (i>=0) s.time_slots.splice(i,1); else s.time_slots.push(slot);
     await putSess(uid, s);
     await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbTimeDaysSlots(s) });
     await answerCb();
@@ -871,4 +880,3 @@ async function onCallback(q) {
     return;
   }
 }
-
