@@ -223,7 +223,7 @@ export async function handleAdminAgentCallback(q, tg, writer){
         const inviteId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2,7)}`;
         await writer("invites_log_add",{ invite_id:inviteId, telegram_id:id, text:pl.message });
         await tg("sendMessage",{ chat_id:id, text:pl.message, reply_markup:{inline_keyboard:[
-          [{text:"✅ Да", callback_data:`invite:yes:${inviteId}`},{text:"❌ Нет", callback_data:`invite:no:${inviteId}`}]
+          [{text:"🔵 Да", callback_data:`invite:yes:${inviteId}`},{text:"🔴 Нет", callback_data:`invite:no:${inviteId}`}]
         ]}});
         ok++; await new Promise(r=>setTimeout(r,80));
       } catch { fail++; }
