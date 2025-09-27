@@ -269,77 +269,195 @@ function consistencyScore(about, interests, stack) {
   if (t.length > 100)     s += 10;
   return Math.min(s, 95);
 }
+
+
+
+
+
 async function runLLM(u, s, submission_count){
-  const base = {
-    telegram_id: String(u.id),
-    name: s.name || "",
-    telegram: s.name || String(u.id),
-    roles_hint: s.interests,
-    stack_hint: s.stack,
-    work_style_raw: {a1:s.a1,a2:s.a2,a3:s.a3},
-    about: s.about || "",
-    submission_count: submission_count || 1,
-    time_zone: s.time_zone || "",
-    time_windows: { days: s.time_days, slots: s.time_slots }
-  };
+  // ---------- подготовим сигналы (для модели это "подсказки", не финальный балл)
+  const name = (s.name || "").trim();
+  const about = (s.about || "").trim();
+  const interests = (s.interests || []).slice(0, 12);
+  const stack = (s.stack || []).slice(0, 12);
 
-  const local = (() => {
-    const nScore  = nameRealismScore(base.name);
-    const aScore  = aboutQualityScore(base.about);
-    const cScore  = consistencyScore(base.about, base.roles_hint, base.stack_hint);
-    const repPenalty = Math.max(0, (base.submission_count-1) * 5);
-    let total = Math.round(Math.max(0, Math.min(100, (nScore*0.25 + aScore*0.45 + cScore*0.30) - repPenalty)));
-    const summary = `Оценка: ${total}/100.`;
-    return { fit_score: total, summary };
-  })();
+  function scoreName(n){
+    const issues = [];
+    let sc = 85;
+    if (!n) { issues.push("не указано имя"); sc = 0; }
+    if (n && !/^[a-zA-Zа-яА-ЯёЁ][a-zA-Zа-яА-ЯёЁ .'\-]{1,79}$/.test(n)) { sc -= 25; issues.push("подозрительные символы/формат"); }
+    if (n && !/\s/.test(n)) { sc -= 10; issues.push("одно слово — нет фамилии"); }
+    if (n && /[0-9_]/.test(n)) { sc -= 15; issues.push("цифры/символы в имени"); }
+    if (n && /^(test|anon|user|qwe|asdf|тест)/i.test(n)) { sc -= 35; issues.push("похоже на псевдоним/тест"); }
+    return { score: Math.max(0, Math.min(95, sc)), issues };
+  }
+  function scoreAbout(t){
+    const issues=[], positives=[];
+    let sc = 50;
+    const len = t.length;
+    if (len >= 400) sc += 15; else if (len >= 200) sc += 10; else if (len >= 100) sc += 5; else { sc -= 10; issues.push("слишком короткое описание"); }
+    if (/[.!?]\s/.test(t)) sc += 5; else issues.push("мало предложений/пунктуации");
+    const letters = (t.match(/[a-zа-яё]/ig) || []).length;
+    const nonLetters = (t.match(/[^a-zа-яё0-9\s.,:;!?\-()]/ig) || []).length;
+    const letterRatio = letters / Math.max(1, t.length);
+    if (letterRatio < 0.65) { sc -= 10; issues.push("много посторонних символов/смайлов"); }
+    if (/(?:asdf|qwer|йцук|ячсм|лол|кек){2,}/i.test(t)) { sc -= 15; issues.push("похоже на случайный набор"); }
+    const links = (t.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0, 5);
+    if (links.length) { sc += 5; positives.push("есть ссылки на работы/профили"); }
+    return { score: Math.max(0, Math.min(95, sc)), issues, positives, links };
+  }
+  function scoreConsistency(t, ints, stk){
+    const text = t.toLowerCase();
+    const tokens = new Set(text.split(/[^a-zа-яё0-9+]+/i).filter(Boolean));
+    const norm = (s)=> String(s||"").toLowerCase().replace(/[^\w+]+/g," ").split(/\s+/).filter(Boolean);
+    const intsWords = ints.flatMap(norm);
+    const stkWords  = stk.flatMap(norm);
+    const hitInt = intsWords.filter(w => tokens.has(w)).length;
+    const hitStk = stkWords.filter(w => tokens.has(w)).length;
+    let sc = 50;
+    const issues=[], positives=[];
+    if (ints.length && hitInt===0) { sc -= 10; issues.push("в «о себе» нет подтверждения интересов"); }
+    if (stk.length  && hitStk===0) { sc -= 10; issues.push("в «о себе» нет подтверждения стека"); }
+    if (hitInt>0)  positives.push("есть пересечение с интересами");
+    if (hitStk>0)  positives.push("есть пересечение со стеком");
+    sc += Math.min(20, hitInt*2 + hitStk*2);
+    return { score: Math.max(0, Math.min(95, sc)), issues, positives };
+  }
+  const rName  = scoreName(name);
+  const rAbout = scoreAbout(about);
+  const rCons  = scoreConsistency(about, interests, stack);
+  const repeatsPenalty = Math.min(35, Math.max(0, (submission_count-1) * 7)); // −7 за каждую повторную попытку
 
-  if (!OPENAI_API_KEY) {
+  // производные поля для подсказки модели
+  const workStyle = { builder:0.5, architect:0.2, researcher:0.1, operator:0.1, integrator:0.1 };
+  switch (s.a1) {
+    case "быстро прототипирую": workStyle.builder+=0.2; break;
+    case "проектирую основательно": workStyle.architect+=0.2; break;
+    case "исследую гипотезы": workStyle.researcher+=0.2; break;
+    case "синхронизирую людей": workStyle.integrator+=0.2; break;
+  }
+  if (s.a2 === "MVP важнее идеала") workStyle.builder+=0.1;
+  if (s.a2 === "полирую до совершенства") workStyle.architect+=0.1;
+  if (s.a3 === "риск/скорость") workStyle.builder+=0.1;
+  if (s.a3 === "надёжность/предсказуемость") workStyle.operator+=0.1;
+  Object.keys(workStyle).forEach(k=> workStyle[k]= Number(Math.max(0, Math.min(1, workStyle[k])).toFixed(2)));
+
+  const slotsCount = (s.time_days?.length || 0) + (s.time_slots?.length || 0);
+  const timeCommitmentHeur = slotsCount>=6 ? "11–20ч" : slotsCount>=3 ? "6–10ч" : "≤5ч";
+
+  // --------- если нет ключа — локальная сводка (страховка)
+  function localFallback(){
+    const positives = [...(rAbout.positives||[]), ...(rCons.positives||[])];
+    const issues = [...rName.issues, ...rAbout.issues, ...rCons.issues];
+    if (repeatsPenalty>0) issues.push(`повторные заполнения: ${submission_count-1} (штраф ${repeatsPenalty})`);
+    const base = Math.round(rName.score*0.25 + rAbout.score*0.45 + rCons.score*0.30);
+    const finalScore = Math.max(0, Math.min(100, base - repeatsPenalty));
+    const bucket = finalScore>=80 ? "сильный кандидат" : finalScore>=65 ? "хороший кандидат" : finalScore>=50 ? "пограничный" : "слабый";
+    const summary =
+`Итоговый балл: ${finalScore}/100 (${bucket}).
+
+Плюсы:
+${positives.length? positives.map(p=>"• "+p).join("\n"):"• явных плюсов нет"}
+
+Минусы/риски:
+${issues.length? issues.map(p=>"• "+p).join("\n"):"• критичных нет"}
+
+Рекомендации:
+• Развернуть «о себе» до 150–300+ символов, привести конкретные результаты и ссылки.
+• Согласовать «о себе» с отмеченными интересами и стеком (минимум 2–3 совпадения).
+• Проверить орфографию и пунктуацию.
+• Не отправлять множество повторных анкет без правок.`;
     return {
-      ...local,
-      roles: (s.interests||[]).slice(0,3),
-      stack: (s.stack||[]).slice(0,5),
-      work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
-      time_commitment: ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=5 ? "11–20ч" :
-                       ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=3 ? "6–10ч" : "≤5ч",
+      fit_score: finalScore,
+      roles: interests.slice(0,6),
+      stack: stack.slice(0,8),
+      work_style: workStyle,
+      time_commitment: timeCommitmentHeur,
+      links: rAbout.links || [],
+      summary
     };
   }
+  if (!OPENAI_API_KEY) return localFallback();
 
+  // ---------- AI — главный оценщик
   try {
-    const SYSTEM = "Верни строго JSON с полями fit_score, summary, roles, stack, work_style, time_commitment.";
-    const USER = JSON.stringify(base, null, 2);
+    const SYSTEM =
+`Ты опытный технический рекрутер. Пиши по-русски.
+Задача: взвесить качество анкеты и выдать детальную сводку и рекомендации.
+Жёсткие правила:
+- Верни СТРОГО JSON.
+- "fit_score" — целое 0..100. 0 — мусор/противоречия/спам; 100 — безупречно.
+- Учитывай: реалистичность имени, орфография/пунктуация "о себе", структура текста, согласованность "о себе" с интересами/стеком, противоречия/хаотичность, повторные попытки (штраф).
+- В "summary" дай 3–6 абзацев: факторы, плюсы, риски, рекомендации и итоговую строку "Итоговый балл: X/100 (<категория>)".
+Схема JSON:
+{
+  "fit_score": 0..100,
+  "breakdown": { "name":0..95, "about":0..95, "spelling":0..95, "consistency":0..95, "repeats_penalty":0..35 },
+  "strengths": ["..."],
+  "risks": ["..."],
+  "recommendations": ["..."],
+  "roles": ["..."],           // предполагаемые роли/направления
+  "stack": ["..."],           // предполагаемый стек
+  "work_style": {"builder":0..1,"architect":0..1,"researcher":0..1,"operator":0..1,"integrator":0..1},
+  "time_commitment": "≤5ч|6–10ч|11–20ч|>20ч",
+  "links": ["..."],
+  "summary": "..."
+}`;
 
-    const body = { model: OPENAI_MODEL, temperature: 0, response_format: { type: "json_object" },
-      messages: [{ role: "system", content: SYSTEM }, { role: "user", content: USER }] };
+    const USER = JSON.stringify({
+      raw: {
+        name,
+        about,
+        interests,
+        stack,
+        a1: s.a1, a2: s.a2, a3: s.a3,
+        time_days: s.time_days || [],
+        time_slots: s.time_slots || [],
+        submission_count
+      },
+      signals: {
+        name: rName, about: { ...rAbout, links: undefined }, consistency: rCons,
+        repeats_penalty: repeatsPenalty,
+        heuristics: { workStyle, timeCommitmentHeur, links: rAbout.links || [] }
+      }
+    }, null, 2);
+
+    const body = {
+      model: OPENAI_MODEL,
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: SYSTEM },
+        { role: "user",   content: USER   }
+      ]
+    };
 
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
-      method:"POST",
-      headers:{ "content-type":"application/json","authorization":"Bearer "+OPENAI_API_KEY },
+      method: "POST",
+      headers: { "content-type":"application/json", "authorization":"Bearer "+OPENAI_API_KEY },
       body: JSON.stringify(body)
     }).then(x=>x.json()).catch(()=>null);
 
     const parsed = JSON.parse(r?.choices?.[0]?.message?.content || "null");
-    if (!parsed || typeof parsed.fit_score !== "number" || !parsed.summary) {
-      return {
-        ...local,
-        roles: (s.interests||[]).slice(0,3),
-        stack: (s.stack||[]).slice(0,5),
-        work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
-        time_commitment: ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=5 ? "11–20ч" :
-                         ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=3 ? "6–10ч" : "≤5ч",
-      };
-    }
-    return parsed;
-  } catch {
+    if (!parsed || typeof parsed.fit_score !== "number" || !parsed.summary) return localFallback();
+
+    // санитизация + разумный дефолт, если каких-то полей нет
     return {
-      ...local,
-      roles: (s.interests||[]).slice(0,3),
-      stack: (s.stack||[]).slice(0,5),
-      work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
-      time_commitment: ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=5 ? "11–20ч" :
-                       ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=3 ? "6–10ч" : "≤5ч",
+      fit_score: Math.max(0, Math.min(100, Math.round(parsed.fit_score))),
+      roles: Array.isArray(parsed.roles) && parsed.roles.length ? parsed.roles.slice(0,6) : interests.slice(0,6),
+      stack: Array.isArray(parsed.stack) && parsed.stack.length ? parsed.stack.slice(0,8) : stack.slice(0,8),
+      work_style: typeof parsed.work_style==="object" ? parsed.work_style : workStyle,
+      time_commitment: parsed.time_commitment || timeCommitmentHeur,
+      links: Array.isArray(parsed.links) ? parsed.links.slice(0,5) : (rAbout.links || []),
+      summary: String(parsed.summary).slice(0, 4000)
     };
+  } catch {
+    return localFallback();
   }
 }
+
+
+
 
 /* ---------------- Запись строки в Sheets ---------------- */
 async function appendSheets(row){
