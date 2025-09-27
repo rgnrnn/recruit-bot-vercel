@@ -57,14 +57,14 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
 /file_link [csv|xlsx] — дать ссылку на файл (Google Drive)
 /export — алиас на /file
 /export_xlsx — явная выгрузка Excel (XLSX)
-/mklink <slug> — WebApp-ссылка (для всех) + deeplink + QR + ручная команда
-/mkqr <slug>   — только QR (WebApp), в описании — ссылки и ручная команда
+/mklink <slug> — WebApp (бесшовно) + deeplink + QR + ручной старт
+/mkqr <slug>   — QR WebApp + ссылки
 /today /stats /who /find /slots /digest — отчёты`;
     await tg("sendMessage", { chat_id: chat, text: msg });
     return true;
   }
 
-  // --- /mklink и /mkqr (генерация ссылок/QR для источника)
+  // --- /mklink и /mkqr
   if (lc.startsWith("/mklink") || lc.startsWith("/mkqr")) {
     if (!isAdmin(uid)) return false;
 
@@ -77,14 +77,14 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
       return true;
     }
 
-    // нормализуем слаг: латиница/цифры/подчёркивания/дефисы
+    // нормализация slug
     const slug = rawSlug
       .toLowerCase()
       .replace(/\s+/g, "-")
       .replace(/[^a-z0-9_-]+/g, "")
       .replace(/^-+|-+$/g, "");
 
-    // узнаём username бота
+    // username бота
     let username = BOT_USERNAME;
     if (!username) {
       try {
@@ -97,7 +97,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
       return true;
     }
 
-    // Классический deeplink (с секретом, если REQUIRE_SECRET)
+    // Классический deeplink (?start=...), работает только на самом первом старте
     const payloadParts = [];
     if (START_SECRET) payloadParts.push(START_SECRET);
     payloadParts.push(`src:${slug}`);
@@ -105,64 +105,58 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
     const deepLink = `https://t.me/${username}?start=${encodeURIComponent(payload)}`;
     const deepQr   = `https://api.qrserver.com/v1/create-qr-code/?size=512x512&data=${encodeURIComponent(deepLink)}`;
 
-    // WebApp-ссылка (работает и для "старых" пользователей)
+    // WebApp deep-link — КАНОНИЧЕСКАЯ форма ?startapp=...
     const appParam = `src:${slug}`;
-    const appLink  = `https://t.me/${username}/app?startapp=${encodeURIComponent(appParam)}`;
+    const appLink  = `https://t.me/${username}?startapp=${encodeURIComponent(appParam)}`;
     const appQr    = `https://api.qrserver.com/v1/create-qr-code/?size=512x512&data=${encodeURIComponent(appLink)}`;
 
     // Ручной fallback (на всякий случай)
     const manual = `/start ${START_SECRET ? `${START_SECRET}__` : ""}src:${slug}`;
 
     if (cmd === "/mkqr") {
-      // Отдаём QR WebApp (рекомендуемый), в подписи — все варианты
       await tg("sendPhoto", {
         chat_id: chat,
         photo: appQr,
         caption:
-`QR WebApp для источника “${slug}”
+`QR WebApp (бесшовно) для “${slug}”
 ${appLink}
 
-Классическая (для первого старта):
+Классическая (первый старт):
 ${deepLink}
 
-Если Telegram не подтягивает payload (редко):
+Если вдруг клиент не подтянет payload (редко):
 ${manual}`
       });
     } else {
-      // Отдаём текст + QR WebApp
       await tg("sendMessage", {
         chat_id: chat,
         text:
 `Источник: ${slug}
 
-⚡ Рекомендуемая WebApp-ссылка (бесшовно, работает и для «старых»):
+⚡ WebApp (бесшовно, для всех):
 ${appLink}
 
 ↗️ Классическая deep-link (payload только на самом первом старте):
 ${deepLink}
 
-🛟 На всякий случай (ручной старт):
+🛟 Ручной старт:
 ${manual}`
       });
       await tg("sendPhoto", { chat_id: chat, photo: appQr, caption: `QR WebApp для источника “${slug}”` });
-      // При желании можно выслать и QR классической ссылки:
+      // при желании можно выслать и deepQr
       // await tg("sendPhoto", { chat_id: chat, photo: deepQr, caption: `QR deeplink (первый старт) для “${slug}”` });
     }
     return true;
   }
 
-  // --- /file_link: ОБРАБАТЫВАЕМ ПЕРВЫМ! ---
+  // --- /file_link
   if (lc === "/file_link" || lc.startsWith("/file_link ")) {
     const arg = (raw.split(/\s+/)[1] || "").toLowerCase();
 
-    // xlsx
     if (arg === "xlsx") {
       try {
         const j = await callWriter("export_xlsx_link");
-        if (j?.ok && j.url) {
-          await tg("sendMessage", { chat_id: chat, text: j.url });
-          return true;
-        }
+        if (j?.ok && j.url) { await tg("sendMessage", { chat_id: chat, text: j.url }); return true; }
         await tg("sendMessage", { chat_id: chat, text: `/file_link xlsx: ошибка — ${j?.reason || "нет данных"}` });
       } catch (e) {
         await tg("sendMessage", { chat_id: chat, text: `/file_link xlsx: ошибка — ${e?.message || "unknown"}` });
@@ -170,33 +164,23 @@ ${manual}`
       return true;
     }
 
-    // csv (cp1251) — основной путь
     try {
       const j1251 = await callWriter("export_csv_cp1251_link");
-      if (j1251?.ok && j1251.url) {
-        await tg("sendMessage", { chat_id: chat, text: j1251.url });
-        return true;
-      }
-      // fallback: UTF-16LE
+      if (j1251?.ok && j1251.url) { await tg("sendMessage", { chat_id: chat, text: j1251.url }); return true; }
       const j = await callWriter("export_csv_utf16le_link");
-      if (j?.ok && j.url) {
-        await tg("sendMessage", { chat_id: chat, text: j.url });
-        return true;
-      }
+      if (j?.ok && j.url) { await tg("sendMessage", { chat_id: chat, text: j.url }); return true; }
     } catch (e) {
       await tg("sendMessage", { chat_id: chat, text: `/file_link: ошибка fallback — ${e?.message || "unknown"}` });
       return true;
     }
-
     await tg("sendMessage", { chat_id: chat, text: "/file_link: ошибка (пустой ответ)" });
     return true;
   }
 
-  // --- /file ---
+  // --- /file
   if (lc === "/file" || lc.startsWith("/file ")) {
     const arg = (raw.split(/\s+/)[1] || "").toLowerCase();
 
-    // xlsx
     if (arg === "xlsx") {
       try {
         const j = await callWriter("export_xlsx_b64");
@@ -204,10 +188,7 @@ ${manual}`
           const buf = Buffer.from(j.base64, "base64");
           const fd = new FormData();
           fd.append("chat_id", String(chat));
-          fd.append("document",
-            new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
-            j.filename || "recruits.xlsx"
-          );
+          fd.append("document", new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), j.filename || "recruits.xlsx");
           await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
           return true;
         }
@@ -218,30 +199,22 @@ ${manual}`
       return true;
     }
 
-    // csv (cp1251) — основной путь
     try {
       const j1251 = await callWriter("export_csv_cp1251_b64");
       if (j1251?.ok && j1251.base64) {
         const buf = Buffer.from(j1251.base64, "base64");
         const fd = new FormData();
         fd.append("chat_id", String(chat));
-        fd.append("document",
-          new Blob([buf], { type: "text/csv" }),
-          j1251.filename || "recruits.csv"
-        );
+        fd.append("document", new Blob([buf], { type: "text/csv" }), j1251.filename || "recruits.csv");
         await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
         return true;
       }
-      // fallback: UTF-16LE
       const j = await callWriter("export_csv_utf16le_text", {}, true);
       if (typeof j === "string" && j.length) {
         const buf = toUtf16leBuffer(j);
         const fd = new FormData();
         fd.append("chat_id", String(chat));
-        fd.append("document",
-          new Blob([buf], { type: "text/csv" }),
-          "recruits.csv"
-        );
+        fd.append("document", new Blob([buf], { type: "text/csv" }), "recruits.csv");
         await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
         return true;
       }
@@ -267,10 +240,7 @@ ${manual}`
         const buf = Buffer.from(j.base64, "base64");
         const fd = new FormData();
         fd.append("chat_id", String(chat));
-        fd.append("document",
-          new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
-          j.filename || "recruits.xlsx"
-        );
+        fd.append("document", new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), j.filename || "recruits.xlsx");
         await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
         return true;
       }
