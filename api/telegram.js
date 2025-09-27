@@ -600,7 +600,7 @@ async function onMessage(m){
 
     const grabSrc = (s) => {
       if (!s) return "";
-      const m = s.match(/(?:^|__)(?:src[:=]|s[:=])([A-Za-z0-9._-]{1,64})/i);
+      const m = s.match(/(?:^|__)(?:src[:=_]|s[:=_])([A-Za-z0-9._-]{1,64})/i);
       return m ? (m[1] || "").toLowerCase() : "";
     };
     const parsedSrc = grabSrc(decoded) || grabSrc(rawPayload);
