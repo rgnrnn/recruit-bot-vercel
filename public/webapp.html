@@ -3,25 +3,27 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>KulMind WebApp Auto-Source</title>
+  <title>Auto Source</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
 <script>
 (function(){
-  const tg = window.Telegram.WebApp;
+  const tg = window.Telegram && window.Telegram.WebApp;
+  if(!tg){ location.href = "https://t.me/rgnr_assistant_bot"; return; }
   tg.ready();
-  // 1) startapp-параметр от Телеграма
-  const sp = tg.initDataUnsafe && tg.initDataUnsafe.start_param || "";
-  // 2) на всякий случай читаем ?src= из урла
+  // Берём start_param из Telegram и src из URL как запасной вариант
+  const sp = (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || "";
   const urlSrc = new URLSearchParams(location.search).get("src") || "";
-  // 3) извлекаем slug
-  function grabSrc(s){ const m = (s||"").match(/(?:^|__)(?:src[:=]|s[:=])([A-Za-z0-9._-]{1,64})/i); return m? m[1].toLowerCase(): ""; }
-  const slug = grabSrc(sp) || grabSrc(urlSrc) || urlSrc || "";
+  const grab = s => {
+    const m = (s||"").match(/(?:^|__)(?:src[:=]|s[:=])([A-Za-z0-9._-]{1,64})/i);
+    return m ? m[1].toLowerCase() : "";
+  };
+  const slug = grab(sp) || grab(urlSrc) || urlSrc || "";
 
-  // 4) шлём боту web_app_data и закрываемся
+  // Отправляем боту и закрываемся
   try { tg.sendData(JSON.stringify({ type:"src", src: slug })); } catch(e){}
-  setTimeout(()=>{ try{ tg.close(); }catch(e){} }, 60);
+  setTimeout(()=>{ try{ tg.close(); }catch(e){} }, 120);
 })();
 </script>
 </body>
