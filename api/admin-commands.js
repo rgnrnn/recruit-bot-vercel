@@ -5,6 +5,9 @@ const ADMIN_ID = String(process.env.ADMIN_CHAT_ID || "");
 const URL  = process.env.SHEETS_WEBHOOK_URL;
 const KEY  = process.env.SHEETS_WEBHOOK_SECRET;
 
+const START_SECRET = process.env.START_SECRET || "";
+const REQUIRE_SEC  = /^1|true$/i.test(process.env.REQUIRE_SECRET || "");
+const BOT_USERNAME = (process.env.BOT_USERNAME || "").replace(/^@/,"");
 function isAdmin(uid) { return String(uid) === ADMIN_ID; }
 
 async function callWriter(op, payload = {}, asText = false) {
@@ -54,25 +57,104 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
 /file_link [csv|xlsx] — дать ссылку на файл (Google Drive)
 /export — алиас на /file
 /export_xlsx — явная выгрузка Excel (XLSX)
+/mklink <slug> — ссылка+QR для источника
+/mkqr <slug>   — только QR
 /today /stats /who /find /slots /digest — как раньше`;
     await tg("sendMessage", { chat_id: chat, text: msg });
+    return true;
+  }
+
+  // --- /mklink и /mkqr (только админ): сгенерировать deeplink + QR для источника
+  if (lc.startsWith("/mklink") || lc.startsWith("/mkqr")) {
+    if (!isAdmin(uid)) return false;
+
+    const parts = raw.split(/\s+/);
+    const cmd = parts[0].toLowerCase();
+    const rawSlug = (parts[1] || "").trim();
+
+    if (!rawSlug) {
+      await tg("sendMessage", { chat_id: chat, text: `Укажи слаг источника: ${cmd} <slug>\nпример: ${cmd} stage_nnug` });
+      return true;
+    }
+
+    // нормализуем слаг: латиница/цифры/подчёркивания/дефисы
+    const slug = rawSlug
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9_-]+/g, "")
+      .replace(/^-+|-+$/g, "");
+
+    // узнаём username бота
+    let username = BOT_USERNAME;
+    if (!username) {
+      try {
+        const me = await tg("getMe", {});
+        username = (me?.result?.username || "").replace(/^@/,"");
+      } catch {}
+    }
+    if (!username) {
+      await tg("sendMessage", { chat_id: chat, text: "Не удалось определить username бота. Задайте BOT_USERNAME в env." });
+      return true;
+    }
+
+    // собираем payload так, чтобы пройти ваше условие REQUIRE_SECRET
+    const payloadParts = [];
+    if (START_SECRET) payloadParts.push(START_SECRET);
+    payloadParts.push(`src:${slug}`);
+    const payload = payloadParts.join("__");
+
+    const link = `https://t.me/${username}?start=${encodeURIComponent(payload)}`;
+
+    // простой внешний генератор QR (подходит для sendPhoto по URL)
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=512x512&data=${encodeURIComponent(link)}`;
+
+    if (cmd === "/mkqr") {
+      await tg("sendPhoto", { chat_id: chat, photo: qrUrl, caption: `QR для источника “${slug}”\n${link}` });
+    } else {
+      await tg("sendMessage", { chat_id: chat, text: `Источник: ${slug}\n${link}` });
+      await tg("sendPhoto",   { chat_id: chat, photo: qrUrl, caption: `QR для источника “${slug}”` });
+    }
     return true;
   }
 
   // --- /file_link: ОБРАБАТЫВАЕМ ПЕРВЫМ! ---
   if (lc === "/file_link" || lc.startsWith("/file_link ")) {
     const arg = (raw.split(/\s+/)[1] || "").toLowerCase();
-    const op = (arg === "xlsx") ? "export_xlsx_drive_link" : "export_csv_drive_link";
+
+    // xlsx
+    if (arg === "xlsx") {
+      try {
+        const j = await callWriter("export_xlsx_link");
+        if (j?.ok && j.url) {
+          await tg("sendMessage", { chat_id: chat, text: j.url });
+          return true;
+        }
+        await tg("sendMessage", { chat_id: chat, text: `/file_link xlsx: ошибка — ${j?.reason || "нет данных"}` });
+      } catch (e) {
+        await tg("sendMessage", { chat_id: chat, text: `/file_link xlsx: ошибка — ${e?.message || "unknown"}` });
+      }
+      return true;
+    }
+
+    // csv (cp1251) — основной путь
     try {
-      const j = await callWriter(op);
+      const j1251 = await callWriter("export_csv_cp1251_link");
+      if (j1251?.ok && j1251.url) {
+        await tg("sendMessage", { chat_id: chat, text: j1251.url });
+        return true;
+      }
+      // fallback: UTF-16LE
+      const j = await callWriter("export_csv_utf16le_link");
       if (j?.ok && j.url) {
         await tg("sendMessage", { chat_id: chat, text: j.url });
         return true;
       }
-      await tg("sendMessage", { chat_id: chat, text: `/file_link ${arg||"csv"}: ошибка — ${j?.reason || "нет данных"}` });
     } catch (e) {
-      await tg("sendMessage", { chat_id: chat, text: `/file_link ${arg||"csv"}: ошибка — ${e?.message || "unknown"}` });
+      await tg("sendMessage", { chat_id: chat, text: `/file_link: ошибка fallback — ${e?.message || "unknown"}` });
+      return true;
     }
+
+    await tg("sendMessage", { chat_id: chat, text: "/file_link: ошибка (пустой ответ)" });
     return true;
   }
 
@@ -110,44 +192,22 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
         const fd = new FormData();
         fd.append("chat_id", String(chat));
         fd.append("document",
-          new Blob([buf], { type: "application/vnd.ms-excel" }),
+          new Blob([buf], { type: "text/csv" }),
           j1251.filename || "recruits.csv"
         );
         await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
         return true;
       }
-    } catch (e) {
-      await tg("sendMessage", { chat_id: chat, text: `/file: ошибка cp1251 — ${e?.message || "unknown"}` });
-    }
-
-    // страхуемся: UTF-16LE с writer или собираем в Node
-    try {
-      const j = await callWriter("export_csv_b64");
-      if (j?.ok && j.base64) {
-        let buf = Buffer.from(j.base64, "base64");
-        if (!(buf[0] === 0xFF && buf[1] === 0xFE)) {
-          const csvText = await callWriter("export_csv", {}, true);
-          buf = toUtf16leBuffer(String(csvText || ""));
-        }
+      // fallback: UTF-16LE
+      const j = await callWriter("export_csv_utf16le_text", {}, true);
+      if (typeof j === "string" && j.length) {
+        const buf = toUtf16leBuffer(j);
         const fd = new FormData();
         fd.append("chat_id", String(chat));
-        fd.append("document", new Blob([buf], { type: "application/vnd.ms-excel" }), j.filename || "recruits.csv");
-        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
-        return true;
-      }
-      await tg("sendMessage", { chat_id: chat, text: `/file: ошибка utf16 — ${j?.reason || "нет данных"}` });
-    } catch (e) {
-      await tg("sendMessage", { chat_id: chat, text: `/file: ошибка utf16 — ${e?.message || "unknown"}` });
-    }
-
-    // последний фолбэк: текст → UTF-16LE в Node
-    try {
-      const csv = await callWriter("export_csv", {}, true);
-      if (typeof csv === "string" && csv.length) {
-        const buf = toUtf16leBuffer(csv);
-        const fd = new FormData();
-        fd.append("chat_id", String(chat));
-        fd.append("document", new Blob([buf], { type: "application/vnd.ms-excel" }), "recruits.csv");
+        fd.append("document",
+          new Blob([buf], { type: "text/csv" }),
+          "recruits.csv"
+        );
         await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
         return true;
       }
@@ -204,27 +264,21 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
   if (lc === "/stats" || lc.startsWith("/stats ")) {
     const j = await callWriter("stats");
     if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:`/stats: ошибка — ${j?.reason || "нет данных"}`}); return true; }
-    const msg =
-`Всего: ${j.total}
-За 7/30 дней: ${j.last7} / ${j.last30}
-Топ-3 интересов: ${j.top_interests.join(", ") || "-"}
-Топ-3 стека: ${j.top_stack.join(", ") || "-"}`;
-    await tg("sendMessage", { chat_id: chat, text: msg });
-    return true;
-  }
-
-  // /who [N]
-  if (lc === "/who" || lc.startsWith("/who ")) {
-    const parts = raw.split(/\s+/);
-    const n = Math.max(1, Math.min(50, Number(parts[1]) || 10));
-    const j = await callWriter("who", { limit: n });
-    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:`/who: ошибка — ${j?.reason || "нет данных"}`}); return true; }
-    const lines = j.rows.map(lineOf).join("\n") || "–";
+    const lines = (j.rows || []).map(lineOf).join("\n") || "–";
     await tg("sendMessage", { chat_id: chat, text: lines });
     return true;
   }
 
-  // /find <mask>
+  // /who
+  if (lc === "/who" || lc.startsWith("/who ")) {
+    const j = await callWriter("who");
+    if (!j?.ok) { await tg("sendMessage",{chat_id:chat,text:`/who: ошибка — ${j?.reason || "нет данных"}`}); return true; }
+    const lines = (j.rows || []).map(lineOf).join("\n") || "–";
+    await tg("sendMessage", { chat_id: chat, text: lines });
+    return true;
+  }
+
+  // /find
   if (lc === "/find" || lc.startsWith("/find ")) {
     const mask = raw.replace(/^\/find\s*/i, "");
     if (!mask) { await tg("sendMessage",{chat_id:chat,text:"/find <mask>"}); return true; }
