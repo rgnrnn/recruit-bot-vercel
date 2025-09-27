@@ -544,6 +544,32 @@ async function onMessage(m){
   const chat = m.chat.id;
   const text = (m.text || "").trim();
 
+
+
+
+// ---- Диагностика: кто я и что в сессии (для любого пользователя)
+if (text === "/whoami") {
+  await tg("sendMessage", { chat_id: chat, text: `uid = ${uid}` });
+  return;
+}
+
+if (text === "/dbg_sess") {
+  try {
+    const j = await rGet(`sess:${uid}`);
+    const raw = j?.result || "";
+    await tg("sendMessage", { chat_id: chat, text: raw ? `sess:${uid}\n\`\`\`\n${raw}\n\`\`\`` : "пусто", parse_mode: "Markdown" });
+  } catch(e) {
+    await tg("sendMessage", { chat_id: chat, text: `err: ${e?.message || e}` });
+  }
+  return;
+}
+
+
+
+
+
+  
+
   // ==== WebApp: принимаем источник бесшовно ====
   if (m.web_app_data && m.web_app_data.data) {
     try {
