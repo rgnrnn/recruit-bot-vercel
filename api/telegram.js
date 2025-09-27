@@ -547,6 +547,29 @@ async function onMessage(m){
 
 
 
+// ---- bridge: подхват источника, записанного WebApp-эндпоинтом
+try {
+  const j = await rGet(`user_src:${uid}`);
+  const seen = (j && j.result) || "";
+  if (seen) {
+    const s0 = await getSess(uid);
+    if (!s0.source) { s0.source = String(seen).toLowerCase(); await putSess(uid, s0); }
+    await rDel(`user_src:${uid}`);
+    dbg("BRIDGE picked src", seen);
+  }
+} catch {}
+
+
+
+
+
+
+
+
+
+  
+
+
 // ---- Диагностика: кто я и что в сессии (для любого пользователя)
 if (text === "/whoami") {
   await tg("sendMessage", { chat_id: chat, text: `uid = ${uid}` });
