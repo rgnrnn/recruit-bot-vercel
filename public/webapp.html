@@ -5,25 +5,52 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Auto Source</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    body{margin:0;font:14px system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
+    .wrap{display:flex;min-height:100vh;align-items:center;justify-content:center}
+    .hint{opacity:.7;text-align:center;padding:24px}
+  </style>
 </head>
 <body>
+<div class="wrap"><div class="hint">Открываю чат…</div></div>
 <script>
 (function(){
-  const tg = window.Telegram && window.Telegram.WebApp;
-  if(!tg){ location.href = "https://t.me/rgnr_assistant_bot"; return; }
-  tg.ready();
-  // Берём start_param из Telegram и src из URL как запасной вариант
-  const sp = (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || "";
-  const urlSrc = new URLSearchParams(location.search).get("src") || "";
-  const grab = s => {
-    const m = (s||"").match(/(?:^|__)(?:src[:=]|s[:=])([A-Za-z0-9._-]{1,64})/i);
-    return m ? m[1].toLowerCase() : "";
-  };
-  const slug = grab(sp) || grab(urlSrc) || urlSrc || "";
+  const BOT = "rgnr_assistant_bot";              // <— твой username бота
+  const tg  = window.Telegram && window.Telegram.WebApp;
 
-  // Отправляем боту и закрываемся
-  try { tg.sendData(JSON.stringify({ type:"src", src: slug })); } catch(e){}
-  setTimeout(()=>{ try{ tg.close(); }catch(e){} }, 120);
+  // извлекаем слаг источника (из start_param или query-параметров)
+  function grab(s){ const m=(s||"").match(/^[A-Za-z0-9_-]{1,64}$/); return m? m[0] : ""; }
+  function qs(name){ return new URLSearchParams(location.search).get(name) || ""; }
+
+  let slug = "";
+  try {
+    const sp = (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || "";
+    slug = grab(sp) || grab(qs("startapp")) || grab(qs("src"));
+  } catch(e){}
+
+  // если не внутри Telegram — просим открыть в Telegram напрямую
+  if (!tg) {
+    const url = `tg://resolve?domain=${BOT}&startapp=${encodeURIComponent(slug || "")}`;
+    location.href = url;
+    return;
+  }
+
+  tg.ready();
+
+  // 1) отправляем боту src (web_app_data)
+  try {
+    tg.sendData(JSON.stringify({ type:"src", src: slug }));
+  } catch(e) {}
+
+  // 2) принудительно открываем чат с ботом (чтобы пользователь его увидел)
+  //    (payload в чат не обязателен — src уже отправили sendData)
+  setTimeout(function(){
+    try {
+      tg.openTelegramLink(`https://t.me/${BOT}`);
+    } catch(e) {}
+    // 3) закрываем WebApp
+    setTimeout(function(){ try{ tg.close(); }catch(e){} }, 150);
+  }, 150);
 })();
 </script>
 </body>
