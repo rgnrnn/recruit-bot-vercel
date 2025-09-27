@@ -2,7 +2,6 @@
 import { handleAdminCommand } from "./admin-commands.js";
 import { handleAdminAgentMessage, handleAdminAgentCallback } from "./admin-agent.js";
 
-
 const TOKEN        = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID     = process.env.ADMIN_CHAT_ID || "";
 const START_SECRET = process.env.START_SECRET || "";
@@ -17,6 +16,18 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL   = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
 const NO_CHAT = "я не веду переписку — используй кнопки ниже";
+
+// ---- DEBUG (включи DEBUG_TELEGRAM=1 в Vercel, чтобы дублировать логи админу) ----
+const DEBUG_TELEGRAM = /^1|true$/i.test(process.env.DEBUG_TELEGRAM || "");
+function dbg(label, payload) {
+  try {
+    const msg = `[DBG] ${label}: ` + (typeof payload === "string" ? payload : JSON.stringify(payload));
+    console.log(msg);
+    if (DEBUG_TELEGRAM && ADMIN_ID) {
+      tg("sendMessage", { chat_id: ADMIN_ID, text: msg.slice(0, 3800) }).catch(()=>{});
+    }
+  } catch {}
+}
 
 const AGE_OPTIONS = ["18–20","21–23","24–26","27–29","30–33","34–37","более 38"];
 
@@ -95,7 +106,6 @@ const rSet=(k,v,qs)=> rCall(`/set/${encodeURIComponent(k)}/${encodeURIComponent(
 const rGet=(k)=> rGET(`/get/${encodeURIComponent(k)}`);
 const rDel=(k)=> rGET(`/del/${encodeURIComponent(k)}`);
 const rIncr=async(k,ex=60)=>{ const j=await rGET(`/incr/${encodeURIComponent(k)}`); if(j.result===1 && ex>0) await rGET(`/expire/${encodeURIComponent(k)}/${ex}`); return j.result; };
-// no-TTL increment (для счётчиков без истечения)
 async function rIncrNoTTL(k){ const j = await rGET(`/incr/${encodeURIComponent(k)}`); return j.result; }
 async function seenUpdate(id){ try{ const j=await rSet(`upd:${id}`,"1",{EX:180,NX:true}); return j&&("result"in j)? j.result==="OK" : true; }catch{return true;} }
 async function overRL(uid,limit=12){ try{return (await rIncr(`rl:${uid}`,60))>limit;}catch{return false;} }
@@ -228,31 +238,28 @@ async function sendTime(chat, sess){
   });
 }
 
-/* ---------------- LLM оценка кандидата ---------------- */
+/* ---------------- LLM (локальная оценка + опционально OpenAI) ---------------- */
 function nameRealismScore(name) {
   const n = (name||"").trim();
   if (!n) return 0;
   if (n.length < 2 || n.length > 80) return 10;
-  if (/^[a-zA-Zа-яА-ЯёЁ\-\'\s]+$/.test(n) === false) return 20; // странные символы
-  // бонусы за нормальное “Имя Фамилия”
+  if (/^[a-zA-Zа-яА-ЯёЁ\-\'\s]+$/.test(n) === false) return 20;
   let score = 70;
   if (/\s/.test(n)) score += 15;
   if (/^[А-ЯЁA-Z][а-яёa-z]+(?:\s+[А-ЯЁA-Z][а-яёa-z]+)+$/.test(n)) score += 10;
   return Math.min(score, 95);
 }
-
 function aboutQualityScore(about) {
   const t = (about||"").trim();
   if (!t) return 0;
   let score = 50;
   if (t.length > 80) score += 10;
   if (t.length > 200) score += 10;
-  if (/[.!?]\s/.test(t)) score += 10; // фразы
+  if (/[.!?]\s/.test(t)) score += 10;
   if (/(github|gitlab|hh\.ru|linkedin|cv|resume|портфолио|pet)/i.test(t)) score += 10;
   if (/fuck|дурак|лох|xxx/i.test(t)) score -= 30;
   return Math.max(0, Math.min(score, 95));
 }
-
 function consistencyScore(about, interests, stack) {
   const t = (about||"").toLowerCase();
   const hasTech = (arr)=> (arr||[]).some(x => t.includes(String(x).toLowerCase().split(/[\/\s,]/)[0]||""));
@@ -262,9 +269,7 @@ function consistencyScore(about, interests, stack) {
   if (t.length > 100)     s += 10;
   return Math.min(s, 95);
 }
-
 async function runLLM(u, s, submission_count){
-  // Подготовим подробный prompt под критерии
   const base = {
     telegram_id: String(u.id),
     name: s.name || "",
@@ -278,12 +283,11 @@ async function runLLM(u, s, submission_count){
     time_windows: { days: s.time_days, slots: s.time_slots }
   };
 
-  // Локальные эвристики (на случай падения API)
   const local = (() => {
     const nScore  = nameRealismScore(base.name);
     const aScore  = aboutQualityScore(base.about);
     const cScore  = consistencyScore(base.about, base.roles_hint, base.stack_hint);
-    const repPenalty = Math.max(0, (base.submission_count-1) * 5); // за каждую повторную попытку -5
+    const repPenalty = Math.max(0, (base.submission_count-1) * 5);
     let total = Math.round(Math.max(0, Math.min(100, (nScore*0.25 + aScore*0.45 + cScore*0.30) - repPenalty)));
     const bucket = total>=80?"сильный кандидат": total>=65?"хороший кандидат": total>=50?"пограничный": "слабый";
     const summary =
@@ -291,8 +295,7 @@ async function runLLM(u, s, submission_count){
 • Реалистичность имени: ${nScore}/100.
 • Качество “о себе”: ${aScore}/100.
 • Согласованность с интересами/стеком: ${cScore}/100.
-• Повторных заполнений: ${base.submission_count-1}.
-Вывод: ${total>=50?"в целом по делу, материал пригоден для контакта":"ответы хаотичные, мало подтверждений компетенций"}.`;
+• Повторных заполнений: ${base.submission_count-1}.`;
     return { fit_score: total, summary };
   })();
 
@@ -311,31 +314,13 @@ async function runLLM(u, s, submission_count){
     const SYSTEM = [
       "Ты строгий технический рекрутер. Верни СТРОГО JSON (без текста снаружи).",
       "Твоя задача: оценить анкету кандидата по критериям и выдать summary + итоговую бальную оценку 0–100.",
-      "Правила баллов:",
-      "1) Повторы заполнения — чем больше, тем хуже (каждый повтор -5 от общего).",
-      "2) Реалистичность имени (внешний вид человеческого имени/фамилии).",
-      "3) Адекватность и развернутость ответа «о себе» (структурность, конкретные достижения, ссылки).",
-      "4) Согласованность «о себе» с заявленными интересами и стеком (не противоречит ли).",
-      "100 — максимум; >50 — по делу и осмысленно; <50 — сумбур/чушь.",
       "Схема ответа JSON:",
-      '{ "fit_score": 0..100, "summary": "подробный текст 2-5 абзацев", "roles": [...], "stack": [...], "work_style": {"builder":0..1,"architect":0..1,"researcher":0..1,"operator":0..1,"integrator":0..1}, "time_commitment": "≤5ч|6–10ч|11–20ч|>20ч" }',
-      "Никаких пояснений вне JSON."
+      '{ "fit_score": 0..100, "summary": "2-5 абзацев", "roles": [...], "stack": [...], "work_style": {"builder":0..1,"architect":0..1,"researcher":0..1,"operator":0..1,"integrator":0..1}, "time_commitment": "≤5ч|6–10ч|11–20ч|>20ч" }'
     ].join("\n");
+    const USER = ["Анкета:", JSON.stringify(base, null, 2)].join("\n");
 
-    const USER = [
-      "Анкета:", JSON.stringify(base, null, 2),
-      "Подсказка: roles_hint — интересы, stack_hint — стек."
-    ].join("\n");
-
-    const body = {
-      model: OPENAI_MODEL,
-      temperature: 0,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM },
-        { role: "user",   content: USER   }
-      ]
-    };
+    const body = { model: OPENAI_MODEL, temperature: 0, response_format: { type: "json_object" },
+      messages: [{ role: "system", content: SYSTEM }, { role: "user", content: USER }] };
 
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method:"POST",
@@ -373,26 +358,21 @@ async function appendSheets(row){
   const res = await fetch(SHEETS_URL, {
     method:"POST", headers:{ "content-type":"application/json" },
     body: JSON.stringify({ secret: SHEETS_SECRET, op:"append", row })
-  }).then(x=>x.json()).catch(()=>({ok:false}));
+  }).then(x=>x.json()).catch((e)=>({ok:false, error:String(e)}));
   return res;
 }
 
 /* ---------------- Финализация анкеты ---------------- */
 async function finalize(chat, user, s) {
   try {
-    // 1) сколько раз уже заполнял (persist в Redis без TTL)
     const cntKey = `forms:${user.id}:count`;
     let cnt = 0;
-    try {
-      const j = await rGet(cntKey);
-      cnt = Number(j?.result || 0) || 0;
-    } catch {}
+    try { const j = await rGet(cntKey); cnt = Number(j?.result || 0) || 0; } catch {}
     const submission_count = cnt + 1;
 
-    // 2) LLM оценка с учётом submission_count
     const llm = await runLLM(user, s, submission_count) || {};
 
-    // 3) Готовим строку для Sheets (25 полей; source — 6-я колонка)
+    // 25 полей; source — 6-я колонка
     const nowISO = new Date().toISOString();
     const row = [
       nowISO,
@@ -400,7 +380,7 @@ async function finalize(chat, user, s) {
       s.started_at || "",
       user?.username ? ("@"+user.username) : String(user?.id || ""),
       String(user?.id || ""),
-      s.source || "",                               // <-- NEW: source
+      s.source || "",
       s.consent || "yes",
       s.name || "",
       JSON.stringify(s.interests || []),
@@ -422,23 +402,21 @@ async function finalize(chat, user, s) {
       llm.summary || "Сохранено."
     ];
 
-    // 4) Пишем строку
-    await appendSheets(row);
+    dbg("APPEND row meta", { len: row.length, source: row[5] });
+    const ans = await appendSheets(row);
+    dbg("APPEND resp", ans);
 
-    // 5) Инкрементируем счётчик заполнений (без TTL)
     try { await rIncrNoTTL(cntKey); } catch {}
 
-    // 6) Сообщаем пользователю
     const days  = (s.time_days||[]).join(", ") || "—";
     const slots = (s.time_slots||[]).join(", ") || "—";
     await tg("sendMessage", {
       chat_id: chat,
       text: `готово! анкета записана ✅
-    Дни: ${days}
-    Слоты: ${slots}`
+Дни: ${days}
+Слоты: ${slots}`
     });
 
-    // 7) Завершаем сессию
     s.step = "done";
     await rSet(`sess:${user.id}`, JSON.stringify(s), { EX: 600 });
     await rDel(`sess:${user.id}`);
@@ -466,7 +444,7 @@ function isAdmin(uid){ return String(uid) === String(ADMIN_ID); }
 function makeNew(){ return {
   run_id:`${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`,
   started_at:new Date().toISOString(),
-  source:"",                     // <-- NEW: поле для источника
+  source:"",         // <-- для источника
   step:"consent", consent:"", name:"",
   age:"",
   interests:[], other_interests:[],
@@ -492,7 +470,7 @@ async function getSess(uid){
     ["interests","stack","time_days","time_slots","time_windows"].forEach(k=>{ if(!Array.isArray(s[k])) s[k]=[]; });
     if(!s.run_id) s.run_id = makeNew().run_id;
     if(!s.started_at) s.started_at = new Date().toISOString();
-    if(typeof s.source !== "string") s.source = ""; // safety
+    if(typeof s.source !== "string") s.source = "";
     return s;
   }catch{ return makeNew(); }
 }
@@ -566,24 +544,24 @@ async function onMessage(m){
   const chat = m.chat.id;
   const text = (m.text || "").trim();
 
-  // Админ-команды — без rate-limit
+  // Админ-команды
   if (text.startsWith("/")) {
+    // быстрая проверка источника
+    if (text === "/mysrc") {
+      const s0 = await getSess(uid);
+      await tg("sendMessage", { chat_id: chat, text: `source = ${s0.source || "<empty>"}` });
+      return;
+    }
     const handled = await handleAdminCommand({ text, uid, chat }, tg);
     if (handled) return;
   }
-  // mini-agent (admin-only). Возвращает true, если сообщение обработано
+  // mini-agent (admin-only)
   if (await handleAdminAgentMessage({ text, uid, chat }, tg, writer)) return;
-  
-  // Получаем сессию и решаем, применять ли RL
+
   const s = await getSess(uid);
   const isFreeTextStep = (s.step === "name" || s.step === "about");
+  if (!isFreeTextStep) { if (await overRL(uid)) return; }
 
-  // На шагах name/about НЕ троттлим — чтобы длинные тексты не «зависали»
-  if (!isFreeTextStep) {
-    if (await overRL(uid)) return;
-  }
-
-  // /look — админский просмотр
   if (isAdmin(uid) && (text === "/look" || text.startsWith("/look "))) {
     await rSet(`look:${uid}:idx`, "0", { EX: 3600 });
     await sendLookCard(chat, 0);
@@ -595,22 +573,20 @@ async function onMessage(m){
 
   if (text.startsWith("/start")){
     const rawPayload = text.split(" ").slice(1).join(" ").trim();
-
-    // безопасный decode: если строка уже «сырая», не упадём
     const safeDecode = (s) => { try { return decodeURIComponent((s||"").replace(/\+/g,"%20")); } catch { return s||""; } };
     const decoded = safeDecode(rawPayload);
+    const hasSecret = (!!START_SECRET && (rawPayload.includes(START_SECRET) || decoded.includes(START_SECRET)));
 
-    const hasSecret =
-      (!!START_SECRET && (rawPayload.includes(START_SECRET) || decoded.includes(START_SECRET)));
-
-    // извлекаем source из decoded, если нет — пробуем raw
     const grabSrc = (s) => {
       if (!s) return "";
-      // поддерживаем src:slug и src=slug; префикс в начале или после "__"
       const m = s.match(/(?:^|__)(?:src[:=]|s[:=])([A-Za-z0-9._-]{1,64})/i);
       return m ? (m[1] || "").toLowerCase() : "";
     };
     const parsedSrc = grabSrc(decoded) || grabSrc(rawPayload);
+
+    dbg("START rawPayload", rawPayload || "<empty>");
+    dbg("START decoded", decoded || "<empty>");
+    dbg("START parsedSrc", parsedSrc || "<none>");
 
     if (REQUIRE_SEC && !hasSecret && String(uid)!==String(ADMIN_ID)){
       await tg("sendMessage",{chat_id:chat,text:`Нужен ключ доступа. Открой ссылку:\nhttps://t.me/rgnr_assistant_bot?start=${encodeURIComponent(START_SECRET||"INVITE")}`});
@@ -618,7 +594,6 @@ async function onMessage(m){
     }
 
     if (s.step && s.step!=="consent"){
-      // если пришёл src и в сессии ещё пусто — запомним
       if (parsedSrc && !s.source) { s.source = parsedSrc; await putSess(uid, s); }
       await tg("sendMessage",{chat_id:chat,text:"Анкета уже начата — продолжать или начать заново?",reply_markup:kbContinueReset()});
       return;
@@ -673,55 +648,39 @@ async function onCallback(q) {
   const answerCb = (text = "", alert = false) =>
     tg("answerCallbackQuery", { callback_query_id: q.id, text, show_alert: alert });
 
-  // 🔹 ФИКС: ответы кандидатов на приглашение принимаем для всех (не только для админа)
+  // ответы по инвайтам (для всех)
   if (/^invite:(yes|no):/.test(data)) {
     const m = data.match(/^invite:(yes|no):(.+)$/);
     const status = m[1] === "yes" ? "accepted" : "declined";
     const inviteId = m[2];
-
     try {
-      // 1) логируем ответ в Google Sheets
       await writer("invite_answer_log", { invite_id: inviteId, status });
-
-      // 2) подтверждаем нажатие кнопки (чтобы исчезли «часики»)
       await answerCb(status === "accepted" ? "Принято ✅" : "Отклонено ❌");
-
-      // 3) если кандидат нажал «Да» — отправляем follow-up сообщение со ссылкой на анкету
       if (status === "accepted") {
         const followup =
-`спасибо за интерес к проекту и «синюю кнопку» и за твое время, которые ты уделяешь этому проекту
-дальше — этап взаимного выбора: большая анкета для партнёров, а не просто исполнителей
-важно увидеть твой стиль решения задач под нагрузкой и отношение к людям
-мы строим инструмент «на годы» — ищем людей с длинным горизонтом, дисциплиной и уважением к времени команды
-покажи примеры из реальной практики, прикладывай ссылки на результаты (код/PR/доклады)
-ответ проверяются на последовательность — пытаться «приукрасить» не нужно; честность важнее идеальности
-данные конфиденциальны; после анализа — следующий шаг
-заполнение анкеты займет от 30 до 40 минут твоего времени
-перейти к анкете: https://docs.google.com/forms/d/e/1FAIpQLSffh081Qv_UXdrFAT0112ehjPHzgY2OhgbXv-htShFJyOgJcA/viewform?usp=sharing&ouid=116560134951115143298`;
+`спасибо за интерес к проекту и «синюю кнопку».
+дальше — этап взаимного выбора: большая анкета.
+перейти: https://docs.google.com/forms/d/e/1FAIpQLSffh081Qv_UXdrFAT0112ehjPHzgY2OhgbXv-htShFJyOgJcA/viewform?usp=sharing`;
         await tg("sendMessage", { chat_id: q.message.chat.id, text: followup });
       }
-    } catch (e) {
+    } catch {
       await answerCb("Ошибка, попробуйте ещё раз", true);
     }
-    return; // дальше не идём
+    return;
   }
 
-  // mini-agent callbacks (только для админа)
   if (await handleAdminAgentCallback(q, tg, writer)) return;
 
-  // LOOK callbacks (админ)
   if (data.startsWith("look:")) {
     if (!isAdmin(uid)) { await answerCb(); return; }
     const parts = data.split(":"); // look:yes:idx | look:no:idx | look:stop
     const action = parts[1];
     const idx = Number(parts[2] || "0");
-
     if (action === "stop") { await answerCb("Остановлено"); return; }
 
     if (action === "yes") {
       const j = await writer("look_fetch", { index: idx });
       if (j?.ok && j.row) {
-        // Чистим строку по списку полей и пишем в Candidates
         const HEADERS = [
           "timestamp","run_id","started_at","telegram","telegram_id",
           "q1_consent","q2_name","q3_interests","q4_stack",
@@ -732,24 +691,15 @@ async function onCallback(q) {
         ];
         const rowClean = {};
         for (const h of HEADERS) rowClean[h] = (j.row[h] !== undefined && j.row[h] !== null) ? j.row[h] : "";
-        let j2;
-        try {
-          j2 = await writer("candidate_add_obj", { row: rowClean, marked_by: String(uid) });
-        } catch (e) {
-          await tg("sendMessage", { chat_id: q.message.chat.id, text: `❌ Ошибка записи в Candidates: ${e?.message || e}` });
-        }
-        if (j2?.ok) {
-          await tg("sendMessage", { chat_id: q.message.chat.id, text: "✅ Добавлено в кандидаты" });
-        } else if (j2 && !j2.ok) {
-          await tg("sendMessage", { chat_id: q.message.chat.id, text: `❌ Не добавлено: ${j2.reason || "unknown"}` });
-        }
+        let j2; try { j2 = await writer("candidate_add_obj", { row: rowClean, marked_by: String(uid) }); } catch {}
+        if (j2?.ok) await tg("sendMessage", { chat_id: q.message.chat.id, text: "✅ Добавлено в кандидаты" });
+        else await tg("sendMessage", { chat_id: q.message.chat.id, text: `❌ Не добавлено: ${j2?.reason || "unknown"}` });
       } else {
         await tg("sendMessage", { chat_id: q.message.chat.id, text: "❌ Не удалось получить анкету" });
       }
     } else {
       await tg("sendMessage", { chat_id: q.message.chat.id, text: "⏭️ Пропущено" });
     }
-
     await answerCb();
     await sendLookCard(q.message.chat.id, idx + 1);
     return;
@@ -762,7 +712,6 @@ async function onCallback(q) {
   if (tooFast) { await answerCb("Слишком часто. Секунду…"); return; }
 
   const chat = q.message.chat.id;
-
   let s = await getSess(uid);
 
   if (data === "continue")     { await continueFlow(uid, chat, s); await answerCb(); return; }
@@ -774,15 +723,13 @@ async function onCallback(q) {
     await putSess(uid, s);
     try { await tg("editMessageText", { chat_id: chat, message_id: q.message.message_id, text: "✅ спасибо за согласие на связь", parse_mode: "HTML" }); } catch {}
     await sendName(chat, uid);
-    await answerCb();
-    return;
+    await answerCb(); return;
   }
   if (data === "consent_no") {
     if (s.step !== "consent") { await answerCb(); return; }
     try { await tg("editMessageText", { chat_id: chat, message_id: q.message.message_id, text: "ок. если передумаешь — /start" }); } catch {}
     await delSess(uid);
-    await answerCb();
-    return;
+    await answerCb(); return;
   }
 
   if (data.startsWith("age:")) {
@@ -791,8 +738,7 @@ async function onCallback(q) {
     s.step = "interests";
     await putSess(uid, s);
     await sendInterests(chat, uid, s);
-    await answerCb();
-    return;
+    await answerCb(); return;
   }
 
   // interests
@@ -807,22 +753,19 @@ async function onCallback(q) {
       s.interests.splice(idx, 1);
       await putSess(uid, s);
       await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbInterests(s.interests) });
-      await answerCb();
-      return;
+      await answerCb(); return;
     }
     if ((s.interests?.length || 0) >= MAX_INTERESTS) { await answerCb(`можно выбрать не более ${MAX_INTERESTS} пунктов`); return; }
 
     s.interests.push(label);
     await putSess(uid, s);
     await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbInterests(s.interests) });
-    await answerCb();
-    return;
+    await answerCb(); return;
   }
   if (data.startsWith("q3:")) {
     if (s.step !== "interests") { await answerCb(); return; }
     if (data === "q3:next") { s.step = "stack"; await putSess(uid, s); await sendStack(chat, uid, s); }
-    await answerCb();
-    return;
+    await answerCb(); return;
   }
 
   // stack
@@ -837,22 +780,19 @@ async function onCallback(q) {
       s.stack.splice(idx, 1);
       await putSess(uid, s);
       await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbStack(s.stack) });
-      await answerCb();
-      return;
+      await answerCb(); return;
     }
     if ((s.stack?.length || 0) >= MAX_STACK) { await answerCb(`можно выбрать не более ${MAX_STACK} пунктов`); return; }
 
     s.stack.push(label);
     await putSess(uid, s);
     await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbStack(s.stack) });
-    await answerCb();
-    return;
+    await answerCb(); return;
   }
   if (data.startsWith("q4:")) {
     if (s.step !== "stack") { await answerCb(); return; }
     if (data === "q4:next") { s.step = "a1"; await putSess(uid, s); await sendA1(chat); }
-    await answerCb();
-    return;
+    await answerCb(); return;
   }
 
   // A1/A2/A3
@@ -863,7 +803,7 @@ async function onCallback(q) {
     s.a3 = data.split(":")[1]; s.step = "about"; await putSess(uid, s); await sendAbout(chat); await answerCb(); return;
   }
 
-  // Q7: дни/слоты и ГОТОВО (польз.)
+  // Q7: дни/слоты и ГОТОВО
   if (data.startsWith("q7d:")) {
     if (s.step !== "time") { await answerCb(); return; }
     const day = data.slice(4);
@@ -871,8 +811,7 @@ async function onCallback(q) {
     if (i>=0) s.time_days.splice(i,1); else s.time_days.push(day);
     await putSess(uid, s);
     await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbTimeDaysSlots(s) });
-    await answerCb();
-    return;
+    await answerCb(); return;
   }
   if (data.startsWith("q7s:")) {
     if (s.step !== "time") { await answerCb(); return; }
@@ -881,15 +820,13 @@ async function onCallback(q) {
     if (i>=0) s.time_slots.splice(i,1); else s.time_slots.push(slot);
     await putSess(uid, s);
     await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbTimeDaysSlots(s) });
-    await answerCb();
-    return;
+    await answerCb(); return;
   }
   if (data === "q7:done") {
     if (s.step !== "time") { await answerCb(); return; }
     if (!(s.time_days?.length) || !(s.time_slots?.length)) {
       await tg("sendMessage", { chat_id: chat, text: "отметь хотя бы один день и один временной слот" });
-      await answerCb();
-      return;
+      await answerCb(); return;
     }
     await answerCb("Секунду, записываю…");
     await finalize(chat, { id: uid, username: q.from.username }, s);
