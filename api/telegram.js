@@ -544,6 +544,30 @@ async function onMessage(m){
   const chat = m.chat.id;
   const text = (m.text || "").trim();
 
+
+
+
+  
+
+// Если пришли данные из WebApp — ставим источник бесшовно
+if (m.web_app_data && m.web_app_data.data) {
+  try {
+    const d = JSON.parse(m.web_app_data.data || "{}");
+    if (d && d.type === "src" && d.src) {
+      const s0 = await getSess(uid);
+      if (!s0.source) { s0.source = String(d.src).toLowerCase(); await putSess(uid, s0); }
+      // Можно ничего не писать пользователю — тихо принялось
+    }
+  } catch {}
+}
+
+
+
+
+
+
+
+  
   // Админ-команды
   if (text.startsWith("/")) {
     // быстрая проверка источника
