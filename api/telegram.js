@@ -544,30 +544,27 @@ async function onMessage(m){
   const chat = m.chat.id;
   const text = (m.text || "").trim();
 
-
-
-
-  
-
-// Если пришли данные из WebApp — ставим источник бесшовно
-if (m.web_app_data && m.web_app_data.data) {
-  try {
-    const d = JSON.parse(m.web_app_data.data || "{}");
-    if (d && d.type === "src" && d.src) {
-      const s0 = await getSess(uid);
-      if (!s0.source) { s0.source = String(d.src).toLowerCase(); await putSess(uid, s0); }
-      // Можно ничего не писать пользователю — тихо принялось
+  // ==== WebApp: принимаем источник бесшовно ====
+  if (m.web_app_data && m.web_app_data.data) {
+    try {
+      const d = JSON.parse(m.web_app_data.data || "{}");
+      dbg("WEBAPP data", d);
+      if (d && d.type === "src" && d.src) {
+        const slug = String(d.src).toLowerCase();
+        const s0 = await getSess(uid);
+        if (!s0.source) { s0.source = slug; await putSess(uid, s0); }
+        await tg("sendMessage", { chat_id: chat, text: `Источник привязан: ${slug} ✅` });
+        dbg("WEBAPP source set", slug);
+      } else {
+        await tg("sendMessage", { chat_id: chat, text: "⚠️ WebApp открылся, но источник не передан." });
+        dbg("WEBAPP no-src", d);
+      }
+    } catch (e) {
+      await tg("sendMessage", { chat_id: chat, text: "⚠️ Не смог прочитать данные от WebApp." });
+      dbg("WEBAPP parse-error", String(e));
     }
-  } catch {}
-}
+  }
 
-
-
-
-
-
-
-  
   // Админ-команды
   if (text.startsWith("/")) {
     // быстрая проверка источника
