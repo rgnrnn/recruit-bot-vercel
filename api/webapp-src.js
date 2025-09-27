@@ -13,7 +13,7 @@ async function rCall(path,qs){ const u=rUrl(path); if(qs) for(const[k,v] of Obje
 const rSet = (k,v,qs)=> rCall(`/set/${encodeURIComponent(k)}/${encodeURIComponent(v)}`, qs);
 
 // ---- Telegram API
-async function tg(method, payload){
+async function tg(method,payload){
   const url = `https://api.telegram.org/bot${TOKEN}/${method}`;
   const res = await fetch(url, { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify(payload) });
   return res.json();
@@ -66,19 +66,22 @@ export default async function handler(req, res){
     try { const userJson = ver.params.get("user"); userId = JSON.parse(userJson || "{}")?.id || 0; } catch {}
     if (!userId) { res.status(400).json({ok:false, reason:"no_user"}); return; }
 
-    // пишем в сессию source (если пусто)
-    const key = `sess:${userId}`;
+    // пишем в сессию source (если пусто) и дублируем в «мост»
+    const sessKey = `sess:${userId}`;
+    const srcKey  = `user_src:${userId}`;
+
     let sess = {};
-    try { const j = await rGET(`/get/${encodeURIComponent(key)}`); if (j?.result) sess = JSON.parse(j.result); } catch {}
+    try { const j = await rGET(`/get/${encodeURIComponent(sessKey)}`); if (j?.result) sess = JSON.parse(j.result); } catch {}
     if (typeof sess !== "object" || !sess) sess = {};
     if (typeof sess.source !== "string") sess.source = "";
     if (!sess.source && srcRaw) sess.source = srcRaw;
     if (!sess.run_id)     sess.run_id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`;
     if (!sess.started_at) sess.started_at = new Date().toISOString();
 
-    await rSet(key, JSON.stringify(sess), { EX: 21600 });
+    await rSet(sessKey, JSON.stringify(sess), { EX: 21600 });
+    await rSet(srcKey, srcRaw, { EX: 21600 });      // <-- мост: бот подхватит, если сессия уже создана
 
-    // уведомим пользователя (чтобы ты видел, что всё ок)
+    // уведомим пользователя (чтобы было видно, что всё ок)
     await tg("sendMessage", { chat_id: userId, text: `Источник привязан: ${sess.source || srcRaw || "-" } ✅` });
 
     console.log("webapp-src OK:", { userId, source: sess.source || srcRaw });
