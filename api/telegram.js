@@ -392,7 +392,7 @@ async function finalize(chat, user, s) {
     // 2) LLM оценка с учётом submission_count
     const llm = await runLLM(user, s, submission_count) || {};
 
-    // 3) Готовим строку для Sheets
+    // 3) Готовим строку для Sheets (25 полей; source — 6-я колонка)
     const nowISO = new Date().toISOString();
     const row = [
       nowISO,
@@ -400,6 +400,7 @@ async function finalize(chat, user, s) {
       s.started_at || "",
       user?.username ? ("@"+user.username) : String(user?.id || ""),
       String(user?.id || ""),
+      s.source || "",                               // <-- NEW: source
       s.consent || "yes",
       s.name || "",
       JSON.stringify(s.interests || []),
@@ -428,7 +429,6 @@ async function finalize(chat, user, s) {
     try { await rIncrNoTTL(cntKey); } catch {}
 
     // 6) Сообщаем пользователю
-    // 6) Сообщаем пользователю (без оценки и summary)
     const days  = (s.time_days||[]).join(", ") || "—";
     const slots = (s.time_slots||[]).join(", ") || "—";
     await tg("sendMessage", {
@@ -437,7 +437,6 @@ async function finalize(chat, user, s) {
     Дни: ${days}
     Слоты: ${slots}`
     });
-
 
     // 7) Завершаем сессию
     s.step = "done";
@@ -467,6 +466,7 @@ function isAdmin(uid){ return String(uid) === String(ADMIN_ID); }
 function makeNew(){ return {
   run_id:`${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`,
   started_at:new Date().toISOString(),
+  source:"",                     // <-- NEW: поле для источника
   step:"consent", consent:"", name:"",
   age:"",
   interests:[], other_interests:[],
@@ -492,6 +492,7 @@ async function getSess(uid){
     ["interests","stack","time_days","time_slots","time_windows"].forEach(k=>{ if(!Array.isArray(s[k])) s[k]=[]; });
     if(!s.run_id) s.run_id = makeNew().run_id;
     if(!s.started_at) s.started_at = new Date().toISOString();
+    if(typeof s.source !== "string") s.source = ""; // safety
     return s;
   }catch{ return makeNew(); }
 }
@@ -593,17 +594,41 @@ async function onMessage(m){
   if (text.toLowerCase()==="/reset" || text.toLowerCase()==="заново"){ await resetFlow(uid,chat); return; }
 
   if (text.startsWith("/start")){
-    const payload   = text.split(" ").slice(1).join(" ").trim();
-    const hasSecret = payload && START_SECRET && payload.includes(START_SECRET);
+    const rawPayload = text.split(" ").slice(1).join(" ").trim();
+
+    // безопасный decode: если строка уже «сырая», не упадём
+    const safeDecode = (s) => { try { return decodeURIComponent((s||"").replace(/\+/g,"%20")); } catch { return s||""; } };
+    const decoded = safeDecode(rawPayload);
+
+    const hasSecret =
+      (!!START_SECRET && (rawPayload.includes(START_SECRET) || decoded.includes(START_SECRET)));
+
+    // извлекаем source из decoded, если нет — пробуем raw
+    const grabSrc = (s) => {
+      if (!s) return "";
+      // поддерживаем src:slug и src=slug; префикс в начале или после "__"
+      const m = s.match(/(?:^|__)(?:src[:=]|s[:=])([A-Za-z0-9._-]{1,64})/i);
+      return m ? (m[1] || "").toLowerCase() : "";
+    };
+    const parsedSrc = grabSrc(decoded) || grabSrc(rawPayload);
+
     if (REQUIRE_SEC && !hasSecret && String(uid)!==String(ADMIN_ID)){
       await tg("sendMessage",{chat_id:chat,text:`Нужен ключ доступа. Открой ссылку:\nhttps://t.me/rgnr_assistant_bot?start=${encodeURIComponent(START_SECRET||"INVITE")}`});
       return;
     }
+
     if (s.step && s.step!=="consent"){
+      // если пришёл src и в сессии ещё пусто — запомним
+      if (parsedSrc && !s.source) { s.source = parsedSrc; await putSess(uid, s); }
       await tg("sendMessage",{chat_id:chat,text:"Анкета уже начата — продолжать или начать заново?",reply_markup:kbContinueReset()});
       return;
     }
-    const s2 = makeNew(); await putSess(uid,s2); await sendWelcome(chat,uid); return;
+
+    const s2 = makeNew();
+    if (parsedSrc) s2.source = parsedSrc;
+    await putSess(uid,s2);
+    await sendWelcome(chat,uid);
+    return;
   }
 
   if (s.step==="name"){
@@ -640,14 +665,6 @@ async function onMessage(m){
 
   await tg("sendMessage",{chat_id:chat,text:NO_CHAT,reply_markup:kbContinueReset()});
 }
-
-
-
-
-
-
-
-
 
 async function onCallback(q) {
   const uid  = q.from.id;
@@ -793,7 +810,6 @@ async function onCallback(q) {
       await answerCb();
       return;
     }
-    // 🔧 здесь была опечатка MAX_INTERЕSTS (кириллич. Е). Должно быть:
     if ((s.interests?.length || 0) >= MAX_INTERESTS) { await answerCb(`можно выбрать не более ${MAX_INTERESTS} пунктов`); return; }
 
     s.interests.push(label);
@@ -843,7 +859,6 @@ async function onCallback(q) {
   if (data.startsWith("a1:")) { if (s.step !== "a1") { await answerCb(); return; } s.a1 = data.split(":")[1]; s.step = "a2"; await putSess(uid, s); await sendA2(chat); await answerCb(); return; }
   if (data.startsWith("a2:")) { if (s.step !== "a2") { await answerCb(); return; } s.a2 = data.split(":")[1]; s.step = "a3"; await putSess(uid, s); await sendA3(chat); await answerCb(); return; }
   if (data.startsWith("a3:")) {
-    // 🔧 здесь была русская "с" в "с.step" — поменял на латинскую s
     if (s.step !== "a3") { await answerCb(); return; }
     s.a3 = data.split(":")[1]; s.step = "about"; await putSess(uid, s); await sendAbout(chat); await answerCb(); return;
   }
@@ -853,7 +868,7 @@ async function onCallback(q) {
     if (s.step !== "time") { await answerCb(); return; }
     const day = data.slice(4);
     const i = s.time_days.indexOf(day);
-    if (i>=0) s.time_days.splice(i,1); else s.time_days.push(day); // 🔧 здесь тоже была русская "с"
+    if (i>=0) s.time_days.splice(i,1); else s.time_days.push(day);
     await putSess(uid, s);
     await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbTimeDaysSlots(s) });
     await answerCb();
