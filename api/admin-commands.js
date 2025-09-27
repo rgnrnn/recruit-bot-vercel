@@ -48,7 +48,6 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
   const raw = text.trim();
   const lc  = raw.toLowerCase();
 
-  // /help
   if (lc === "/help") {
     const msg =
 `Команды админа:
@@ -77,7 +76,7 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
       return true;
     }
 
-    // нормализация slug
+    // нормализация slug: только [a-z0-9_-]
     const slug = rawSlug
       .toLowerCase()
       .replace(/\s+/g, "-")
@@ -97,21 +96,22 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
       return true;
     }
 
-    // Классический deeplink (?start=...), работает только на самом первом старте
+    // Deeplink (?start=...) — ТОЛЬКО безопасные символы
+    // Было: START_SECRET__src:<slug> — двоеточие ломало клиентов.
+    // Стало: START_SECRET__src_<slug>
     const payloadParts = [];
     if (START_SECRET) payloadParts.push(START_SECRET);
-    payloadParts.push(`src:${slug}`);
+    payloadParts.push(`src_${slug}`);
     const payload = payloadParts.join("__");
     const deepLink = `https://t.me/${username}?start=${encodeURIComponent(payload)}`;
     const deepQr   = `https://api.qrserver.com/v1/create-qr-code/?size=512x512&data=${encodeURIComponent(deepLink)}`;
 
-    // WebApp deep-link — КАНОНИЧЕСКАЯ форма ?startapp=...
-    const appParam = `src:${slug}`;
-    const appLink  = `https://t.me/${username}?startapp=${encodeURIComponent(appParam)}`;
+    // WebApp (?startapp=...) — ТОЛЬКО slug (без "src:")
+    const appLink  = `https://t.me/${username}?startapp=${encodeURIComponent(slug)}`;
     const appQr    = `https://api.qrserver.com/v1/create-qr-code/?size=512x512&data=${encodeURIComponent(appLink)}`;
 
     // Ручной fallback (на всякий случай)
-    const manual = `/start ${START_SECRET ? `${START_SECRET}__` : ""}src:${slug}`;
+    const manual = `/start ${payload}`;
 
     if (cmd === "/mkqr") {
       await tg("sendPhoto", {
