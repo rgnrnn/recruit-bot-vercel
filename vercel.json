@@ -1,0 +1,12 @@
+{
+  "headers": [
+    {
+      "source": "/webapp.html",
+      "headers": [
+        { "key": "X-Frame-Options", "value": "ALLOWALL" },
+        { "key": "Content-Security-Policy", "value": "frame-ancestors https://*.telegram.org https://web.telegram.org https://*.telegram.me 'self';" },
+        { "key": "Referrer-Policy", "value": "no-referrer" }
+      ]
+    }
+  ]
+}
