@@ -17,7 +17,7 @@ const OPENAI_MODEL   = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
 const NO_CHAT = "я не веду переписку — используй кнопки ниже";
 
-// ---- DEBUG (включи DEBUG_TELEGRAM=1 в Vercel, чтобы дублировать логи админу) ----
+// ---- DEBUG ----
 const DEBUG_TELEGRAM = /^1|true$/i.test(process.env.DEBUG_TELEGRAM || "");
 function dbg(label, payload) {
   try {
@@ -289,13 +289,7 @@ async function runLLM(u, s, submission_count){
     const cScore  = consistencyScore(base.about, base.roles_hint, base.stack_hint);
     const repPenalty = Math.max(0, (base.submission_count-1) * 5);
     let total = Math.round(Math.max(0, Math.min(100, (nScore*0.25 + aScore*0.45 + cScore*0.30) - repPenalty)));
-    const bucket = total>=80?"сильный кандидат": total>=65?"хороший кандидат": total>=50?"пограничный": "слабый";
-    const summary =
-`Оценка: ${total}/100 (${bucket}).
-• Реалистичность имени: ${nScore}/100.
-• Качество “о себе”: ${aScore}/100.
-• Согласованность с интересами/стеком: ${cScore}/100.
-• Повторных заполнений: ${base.submission_count-1}.`;
+    const summary = `Оценка: ${total}/100.`;
     return { fit_score: total, summary };
   })();
 
@@ -311,13 +305,8 @@ async function runLLM(u, s, submission_count){
   }
 
   try {
-    const SYSTEM = [
-      "Ты строгий технический рекрутер. Верни СТРОГО JSON (без текста снаружи).",
-      "Твоя задача: оценить анкету кандидата по критериям и выдать summary + итоговую бальную оценку 0–100.",
-      "Схема ответа JSON:",
-      '{ "fit_score": 0..100, "summary": "2-5 абзацев", "roles": [...], "stack": [...], "work_style": {"builder":0..1,"architect":0..1,"researcher":0..1,"operator":0..1,"integrator":0..1}, "time_commitment": "≤5ч|6–10ч|11–20ч|>20ч" }'
-    ].join("\n");
-    const USER = ["Анкета:", JSON.stringify(base, null, 2)].join("\n");
+    const SYSTEM = "Верни строго JSON с полями fit_score, summary, roles, stack, work_style, time_commitment.";
+    const USER = JSON.stringify(base, null, 2);
 
     const body = { model: OPENAI_MODEL, temperature: 0, response_format: { type: "json_object" },
       messages: [{ role: "system", content: SYSTEM }, { role: "user", content: USER }] };
@@ -347,7 +336,7 @@ async function runLLM(u, s, submission_count){
       stack: (s.stack||[]).slice(0,5),
       work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
       time_commitment: ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=5 ? "11–20ч" :
-                       ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=3 ? "6–10ч" : "≤5ч",
+                       ((с.time_days?.length || 0)+(с.time_slots?.length || 0))>=3 ? "6–10ч" : "≤5ч",
     };
   }
 }
@@ -444,7 +433,7 @@ function isAdmin(uid){ return String(uid) === String(ADMIN_ID); }
 function makeNew(){ return {
   run_id:`${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`,
   started_at:new Date().toISOString(),
-  source:"",         // <-- для источника
+  source:"",
   step:"consent", consent:"", name:"",
   age:"",
   interests:[], other_interests:[],
@@ -458,7 +447,9 @@ function makeNew(){ return {
   llm:{}
 };}
 async function resetFlow(uid,chat){
+  const prev = await getSess(uid);        // <-- сохраняем предыдущий source
   const s = makeNew();
+  s.source = prev.source || "";
   await rSet(`sess:${uid}`,JSON.stringify(s),{EX:21600});
   await tg("sendMessage",{chat_id:chat,text:"🔁 начинаем заново — это новая попытка."});
   await sendWelcome(chat,uid);
@@ -544,79 +535,20 @@ async function onMessage(m){
   const chat = m.chat.id;
   const text = (m.text || "").trim();
 
-
-
-
-// ---- bridge: подхват источника, записанного WebApp-эндпоинтом
-try {
-  const j = await rGet(`user_src:${uid}`);
-  const seen = (j && j.result) || "";
-  if (seen) {
-    const s0 = await getSess(uid);
-    if (!s0.source) { s0.source = String(seen).toLowerCase(); await putSess(uid, s0); }
-    await rDel(`user_src:${uid}`);
-    dbg("BRIDGE picked src", seen);
-  }
-} catch {}
-
-
-
-
-
-
-
-
-
-  
-
-
-// ---- Диагностика: кто я и что в сессии (для любого пользователя)
-if (text === "/whoami") {
-  await tg("sendMessage", { chat_id: chat, text: `uid = ${uid}` });
-  return;
-}
-
-if (text === "/dbg_sess") {
+  // ---- bridge: подхват источника, записанного WebApp-эндпоинтом
   try {
-    const j = await rGet(`sess:${uid}`);
-    const raw = j?.result || "";
-    await tg("sendMessage", { chat_id: chat, text: raw ? `sess:${uid}\n\`\`\`\n${raw}\n\`\`\`` : "пусто", parse_mode: "Markdown" });
-  } catch(e) {
-    await tg("sendMessage", { chat_id: chat, text: `err: ${e?.message || e}` });
-  }
-  return;
-}
-
-
-
-
-
-  
-
-  // ==== WebApp: принимаем источник бесшовно ====
-  if (m.web_app_data && m.web_app_data.data) {
-    try {
-      const d = JSON.parse(m.web_app_data.data || "{}");
-      dbg("WEBAPP data", d);
-      if (d && d.type === "src" && d.src) {
-        const slug = String(d.src).toLowerCase();
-        const s0 = await getSess(uid);
-        if (!s0.source) { s0.source = slug; await putSess(uid, s0); }
-        await tg("sendMessage", { chat_id: chat, text: `Источник привязан: ${slug} ✅` });
-        dbg("WEBAPP source set", slug);
-      } else {
-        await tg("sendMessage", { chat_id: chat, text: "⚠️ WebApp открылся, но источник не передан." });
-        dbg("WEBAPP no-src", d);
-      }
-    } catch (e) {
-      await tg("sendMessage", { chat_id: chat, text: "⚠️ Не смог прочитать данные от WebApp." });
-      dbg("WEBAPP parse-error", String(e));
+    const j = await rGet(`user_src:${uid}`);
+    const seen = (j && j.result) || "";
+    if (seen) {
+      const s0 = await getSess(uid);
+      if (!s0.source) { s0.source = String(seen).toLowerCase(); await putSess(uid, s0); }
+      await rDel(`user_src:${uid}`);
+      dbg("BRIDGE picked src", seen);
     }
-  }
+  } catch {}
 
   // Админ-команды
   if (text.startsWith("/")) {
-    // быстрая проверка источника
     if (text === "/mysrc") {
       const s0 = await getSess(uid);
       await tg("sendMessage", { chat_id: chat, text: `source = ${s0.source || "<empty>"}` });
@@ -649,6 +581,7 @@ if (text === "/dbg_sess") {
 
     const grabSrc = (s) => {
       if (!s) return "";
+      // поддержка старых форматов: src:, src=, src_  — после __
       const m = s.match(/(?:^|__)(?:src[:=_]|s[:=_])([A-Za-z0-9._-]{1,64})/i);
       return m ? (m[1] || "").toLowerCase() : "";
     };
@@ -669,8 +602,9 @@ if (text === "/dbg_sess") {
       return;
     }
 
+    // ВАЖНО: при новом старте не теряем source (наследуем из s)
     const s2 = makeNew();
-    if (parsedSrc) s2.source = parsedSrc;
+    s2.source = parsedSrc || s.source || "";
     await putSess(uid,s2);
     await sendWelcome(chat,uid);
     return;
@@ -833,7 +767,7 @@ async function onCallback(q) {
     await answerCb(); return;
   }
   if (data.startsWith("q3:")) {
-    if (s.step !== "interests") { await answerCb(); return; }
+    if (с.step !== "interests") { await answerCb(); return; }
     if (data === "q3:next") { s.step = "stack"; await putSess(uid, s); await sendStack(chat, uid, s); }
     await answerCb(); return;
   }
