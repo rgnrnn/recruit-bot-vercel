@@ -336,7 +336,7 @@ async function runLLM(u, s, submission_count){
       stack: (s.stack||[]).slice(0,5),
       work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
       time_commitment: ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=5 ? "11–20ч" :
-                       ((с.time_days?.length || 0)+(с.time_slots?.length || 0))>=3 ? "6–10ч" : "≤5ч",
+                       ((s.time_days?.length || 0)+(s.time_slots?.length || 0))>=3 ? "6–10ч" : "≤5ч",
     };
   }
 }
@@ -447,7 +447,7 @@ function makeNew(){ return {
   llm:{}
 };}
 async function resetFlow(uid,chat){
-  const prev = await getSess(uid);        // <-- сохраняем предыдущий source
+  const prev = await getSess(uid);         // сохраняем предыдущий source
   const s = makeNew();
   s.source = prev.source || "";
   await rSet(`sess:${uid}`,JSON.stringify(s),{EX:21600});
@@ -547,16 +547,27 @@ async function onMessage(m){
     }
   } catch {}
 
-  // Админ-команды
+  // Админ-команды / быстрые диагностики
   if (text.startsWith("/")) {
     if (text === "/mysrc") {
       const s0 = await getSess(uid);
       await tg("sendMessage", { chat_id: chat, text: `source = ${s0.source || "<empty>"}` });
       return;
     }
+    if (text === "/whoami") { await tg("sendMessage", { chat_id: chat, text: `uid = ${uid}` }); return; }
+    if (text === "/dbg_sess") {
+      try {
+        const j = await rGet(`sess:${uid}`);
+        const raw = j?.result || "";
+        await tg("sendMessage", { chat_id: chat, text: raw ? `sess:${uid}\n\`\`\`\n${raw}\n\`\`\`` : "пусто", parse_mode: "Markdown" });
+      } catch(e) { await tg("sendMessage", { chat_id: chat, text: `err: ${e?.message || e}` }); }
+      return;
+    }
+
     const handled = await handleAdminCommand({ text, uid, chat }, tg);
     if (handled) return;
   }
+
   // mini-agent (admin-only)
   if (await handleAdminAgentMessage({ text, uid, chat }, tg, writer)) return;
 
@@ -579,9 +590,9 @@ async function onMessage(m){
     const decoded = safeDecode(rawPayload);
     const hasSecret = (!!START_SECRET && (rawPayload.includes(START_SECRET) || decoded.includes(START_SECRET)));
 
+    // поддержка старых форматов: src:, src=, src_  — после "__"
     const grabSrc = (s) => {
       if (!s) return "";
-      // поддержка старых форматов: src:, src=, src_  — после __
       const m = s.match(/(?:^|__)(?:src[:=_]|s[:=_])([A-Za-z0-9._-]{1,64})/i);
       return m ? (m[1] || "").toLowerCase() : "";
     };
@@ -602,7 +613,7 @@ async function onMessage(m){
       return;
     }
 
-    // ВАЖНО: при новом старте не теряем source (наследуем из s)
+    // при новом старте НЕ теряем source — наследуем из текущей сессии
     const s2 = makeNew();
     s2.source = parsedSrc || s.source || "";
     await putSess(uid,s2);
@@ -767,7 +778,7 @@ async function onCallback(q) {
     await answerCb(); return;
   }
   if (data.startsWith("q3:")) {
-    if (с.step !== "interests") { await answerCb(); return; }
+    if (s.step !== "interests") { await answerCb(); return; }
     if (data === "q3:next") { s.step = "stack"; await putSess(uid, s); await sendStack(chat, uid, s); }
     await answerCb(); return;
   }
