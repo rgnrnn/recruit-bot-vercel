@@ -57,14 +57,14 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
 /file_link [csv|xlsx] — дать ссылку на файл (Google Drive)
 /export — алиас на /file
 /export_xlsx — явная выгрузка Excel (XLSX)
-/mklink <slug> — ссылка+QR для источника
-/mkqr <slug>   — только QR
-/today /stats /who /find /slots /digest — как раньше`;
+/mklink <slug> — WebApp-ссылка (для всех) + deeplink + QR + ручная команда
+/mkqr <slug>   — только QR (WebApp), в описании — ссылки и ручная команда
+/today /stats /who /find /slots /digest — отчёты`;
     await tg("sendMessage", { chat_id: chat, text: msg });
     return true;
   }
 
-  // --- /mklink и /mkqr (только админ): сгенерировать deeplink + QR для источника
+  // --- /mklink и /mkqr (генерация ссылок/QR для источника)
   if (lc.startsWith("/mklink") || lc.startsWith("/mkqr")) {
     if (!isAdmin(uid)) return false;
 
@@ -97,22 +97,56 @@ export async function handleAdminCommand({ text, uid, chat }, tg) {
       return true;
     }
 
-    // собираем payload так, чтобы пройти ваше условие REQUIRE_SECRET
+    // Классический deeplink (с секретом, если REQUIRE_SECRET)
     const payloadParts = [];
     if (START_SECRET) payloadParts.push(START_SECRET);
     payloadParts.push(`src:${slug}`);
     const payload = payloadParts.join("__");
+    const deepLink = `https://t.me/${username}?start=${encodeURIComponent(payload)}`;
+    const deepQr   = `https://api.qrserver.com/v1/create-qr-code/?size=512x512&data=${encodeURIComponent(deepLink)}`;
 
-    const link = `https://t.me/${username}?start=${encodeURIComponent(payload)}`;
+    // WebApp-ссылка (работает и для "старых" пользователей)
+    const appParam = `src:${slug}`;
+    const appLink  = `https://t.me/${username}/app?startapp=${encodeURIComponent(appParam)}`;
+    const appQr    = `https://api.qrserver.com/v1/create-qr-code/?size=512x512&data=${encodeURIComponent(appLink)}`;
 
-    // простой внешний генератор QR (подходит для sendPhoto по URL)
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=512x512&data=${encodeURIComponent(link)}`;
+    // Ручной fallback (на всякий случай)
+    const manual = `/start ${START_SECRET ? `${START_SECRET}__` : ""}src:${slug}`;
 
     if (cmd === "/mkqr") {
-      await tg("sendPhoto", { chat_id: chat, photo: qrUrl, caption: `QR для источника “${slug}”\n${link}` });
+      // Отдаём QR WebApp (рекомендуемый), в подписи — все варианты
+      await tg("sendPhoto", {
+        chat_id: chat,
+        photo: appQr,
+        caption:
+`QR WebApp для источника “${slug}”
+${appLink}
+
+Классическая (для первого старта):
+${deepLink}
+
+Если Telegram не подтягивает payload (редко):
+${manual}`
+      });
     } else {
-      await tg("sendMessage", { chat_id: chat, text: `Источник: ${slug}\n${link}` });
-      await tg("sendPhoto",   { chat_id: chat, photo: qrUrl, caption: `QR для источника “${slug}”` });
+      // Отдаём текст + QR WebApp
+      await tg("sendMessage", {
+        chat_id: chat,
+        text:
+`Источник: ${slug}
+
+⚡ Рекомендуемая WebApp-ссылка (бесшовно, работает и для «старых»):
+${appLink}
+
+↗️ Классическая deep-link (payload только на самом первом старте):
+${deepLink}
+
+🛟 На всякий случай (ручной старт):
+${manual}`
+      });
+      await tg("sendPhoto", { chat_id: chat, photo: appQr, caption: `QR WebApp для источника “${slug}”` });
+      // При желании можно выслать и QR классической ссылки:
+      // await tg("sendPhoto", { chat_id: chat, photo: deepQr, caption: `QR deeplink (первый старт) для “${slug}”` });
     }
     return true;
   }
