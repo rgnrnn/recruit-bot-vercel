@@ -22,8 +22,7 @@ const DEBUG_TELEGRAM = /^1|true$/i.test(process.env.DEBUG_TELEGRAM || "");
 function dbg(label, payload) {
   try {
     const msg = `[DBG] ${label}: ` + (typeof payload === "string" ? payload : JSON.stringify(payload));
-    console.log(msg);               // <-- только консоль
-    // никаких sendMessage админу
+    console.log(msg);
   } catch {}
 }
 
@@ -116,6 +115,18 @@ async function getFormsVersion() {
 }
 async function formsResetAll() {
   try { await rIncrNoTTL("forms:version"); return true; } catch { return false; }
+}
+
+// NEW: чтение/миграция счётчика отправок (учитывает legacy-ключи)
+async function getSubmitCount(uid) {
+  const ver = await getFormsVersion();
+  const keyVer = `forms:v${ver}:${uid}:count`;
+  let cnt = 0, legacy = 0;
+  try { const j = await rGet(keyVer); cnt = Number(j?.result || 0) || 0; } catch {}
+  try { const j2 = await rGet(`forms:${uid}:count`); legacy = Number(j2?.result || 0) || 0; } catch {}
+  const merged = Math.max(cnt, legacy);
+  if (legacy > cnt) { try { await rSet(keyVer, String(legacy)); } catch {} }
+  return { count: merged, key: keyVer, version: ver };
 }
 
 async function seenUpdate(id){ try{ const j=await rSet(`upd:${id}`,"1",{EX:180,NX:true}); return j&&("result"in j)? j.result==="OK" : true; }catch{return true;} }
@@ -282,13 +293,11 @@ function consistencyScore(about, interests, stack) {
 }
 
 async function runLLM(u, s, submission_count){
-  // ---------- базовые поля ----------
   const name   = (s.name || "").trim();
   const about  = (s.about || "").trim();
   const ints   = (s.interests || []).slice(0, 12);
   const stk    = (s.stack || []).slice(0, 12);
 
-  // ---------- утилиты для флагов ----------
   const RU_VOW = "аеёиоуыэюя";
   const EN_VOW = "aeiouy";
   const VOWELS_RE = /[аеёиоуыэюяaeiouy]/ig;
@@ -352,7 +361,6 @@ async function runLLM(u, s, submission_count){
   const cons       = consistencySignals(about, ints, stk);
   const repeats    = Math.max(0, submission_count - 1);
 
-  // work_style (из ответов)
   const workStyle = { builder:0.5, architect:0.2, researcher:0.1, operator:0.1, integrator:0.1 };
   switch (s.a1) {
     case "быстро прототипирую": workStyle.builder+=0.2; break;
@@ -633,7 +641,7 @@ function makeNew(){ return {
   llm:{}
 };}
 async function resetFlow(uid,chat){
-  const prev = await getSess(uid);         // сохраняем предыдущий source
+  const prev = await getSess(uid);
   const s = makeNew();
   s.source = prev.source || "";
   await rSet(`sess:${uid}`,JSON.stringify(s),{EX:21600});
@@ -929,7 +937,6 @@ async function onCallback(q) {
     if (s.step !== "consent") { await answerCb(); return; }
     s.consent = "yes"; s.step = "name";
     await putSess(uid, s);
-    // 1) снимаем только клавиатуру у приветственного сообщения
     try {
       await tg("editMessageReplyMarkup", {
         chat_id: chat,
@@ -937,7 +944,6 @@ async function onCallback(q) {
         reply_markup: { inline_keyboard: [] }
       });
     } catch {}
-    // 2) отправляем отдельное подтверждение
     await tg("sendMessage", { chat_id: chat, text: "✅ Спасибо! Перейдём к анкете." });
     await sendName(chat, uid);
     await answerCb();
@@ -946,7 +952,6 @@ async function onCallback(q) {
 
   if (data === "consent_no") {
     if (s.step !== "consent") { await answerCb(); return; }
-    // 1) снимаем клавиатуру у приветственного сообщения
     try {
       await tg("editMessageReplyMarkup", {
         chat_id: chat,
@@ -954,7 +959,6 @@ async function onCallback(q) {
         reply_markup: { inline_keyboard: [] }
       });
     } catch {}
-    // 2) отдельным сообщением — отказ
     await tg("sendMessage", { chat_id: chat, text: "Ок. Если передумаешь — набери /start." });
     await delSess(uid);
     await answerCb();
@@ -1058,13 +1062,10 @@ async function onCallback(q) {
       await answerCb(); return;
     }
 
-    // NEW: лимит на 5 отправок (кроме админа)
+    // NEW: лимит на 5 отправок (кроме админа) с учётом legacy-счётчика
     if (!isAdmin(uid)) {
-      const ver = await getFormsVersion();
-      const cntKey = `forms:v${ver}:${uid}:count`;
-      let cnt = 0;
-      try { const j = await rGet(cntKey); cnt = Number(j?.result || 0) || 0; } catch {}
-      if (cnt >= 5) {
+      const info = await getSubmitCount(uid);
+      if (info.count >= 5) {
         await answerCb();
         await tg("sendMessage", {
           chat_id: chat,
