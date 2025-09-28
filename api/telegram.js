@@ -17,15 +17,13 @@ const OPENAI_MODEL   = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
 const NO_CHAT = "я не веду переписку — используй кнопки ниже";
 
-// ---- DEBUG ----
+// ---- DEBUG (только в логи Vercel; админу не слать) ----
 const DEBUG_TELEGRAM = /^1|true$/i.test(process.env.DEBUG_TELEGRAM || "");
 function dbg(label, payload) {
   try {
     const msg = `[DBG] ${label}: ` + (typeof payload === "string" ? payload : JSON.stringify(payload));
-    console.log(msg);
-    if (DEBUG_TELEGRAM && ADMIN_ID) {
-      tg("sendMessage", { chat_id: ADMIN_ID, text: msg.slice(0, 3800) }).catch(()=>{});
-    }
+    console.log(msg);               // <-- только консоль
+    // никаких sendMessage админу
   } catch {}
 }
 
@@ -469,17 +467,61 @@ async function appendSheets(row){
   return res;
 }
 
+
+
+
+// Уведомление администратора о новой анкете
+function chunkText(str, max = 3500) {
+  const out = [];
+  for (let i = 0; i < String(str).length; i += max) out.push(String(str).slice(i, i + max));
+  return out;
+}
+async function notifyAdminOnFinish(user, s, llm, whenISO) {
+  if (!ADMIN_ID) return;
+  const header =
+`🆕 Новая анкета
+Время: ${whenISO}
+Telegram: ${user?.username ? "@"+user.username : user?.id}
+User ID: ${user?.id}
+Source: ${s.source || "-"}
+Fit score: ${typeof llm.fit_score === "number" ? llm.fit_score : "—"}`;
+
+  const roles = (llm.roles || s.interests || []).slice(0,3).join(", ") || "—";
+  const stack = (llm.stack || s.stack || []).slice(0,4).join(", ") || "—";
+  const body =
+`Роли: ${roles}
+Стек: ${stack}
+
+${llm.summary || "summary не сгенерирован"}`;
+
+  await tg("sendMessage", { chat_id: ADMIN_ID, text: header });
+  for (const part of chunkText(body)) {
+    await tg("sendMessage", { chat_id: ADMIN_ID, text: part });
+  }
+}
+
+
+
+
+
+
+
+
+
+
 /* ---------------- Финализация анкеты ---------------- */
 async function finalize(chat, user, s) {
   try {
+    // 1) Сколько раз уже заполнял (persist без TTL)
     const cntKey = `forms:${user.id}:count`;
     let cnt = 0;
     try { const j = await rGet(cntKey); cnt = Number(j?.result || 0) || 0; } catch {}
     const submission_count = cnt + 1;
 
+    // 2) Оценка/summary от LLM (или фолбэк)
     const llm = await runLLM(user, s, submission_count) || {};
 
-    // 25 полей; source — 6-я колонка
+    // 3) Готовим строку для Google Sheets (25 колонок; source — 6-я)
     const nowISO = new Date().toISOString();
     const row = [
       nowISO,
@@ -504,17 +546,22 @@ async function finalize(chat, user, s) {
       JSON.stringify(llm.roles || s.interests || []),
       JSON.stringify(llm.stack || s.stack || []),
       JSON.stringify(llm.work_style || {}),
-      llm.time_commitment || (((s.time_days?.length||0)+(s.time_slots?.length||0))>=5 ? "11–20ч" : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч"),
+      llm.time_commitment || (((s.time_days?.length||0)+(s.time_slots?.length||0))>=5 ? "11–20ч"
+                               : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч"),
       JSON.stringify(llm.links || []),
       llm.summary || "Сохранено."
     ];
 
-    dbg("APPEND row meta", { len: row.length, source: row[5] });
-    const ans = await appendSheets(row);
-    dbg("APPEND resp", ans);
+    // 4) Пишем строку
+    await appendSheets(row);
 
+    // 4.1) Уведомляем администратора краткой сводкой (без падения при ошибке)
+    try { await notifyAdminOnFinish(user, s, llm, nowISO); } catch {}
+
+    // 5) Инкрементируем счётчик попыток
     try { await rIncrNoTTL(cntKey); } catch {}
 
+    // 6) Сообщаем пользователю
     const days  = (s.time_days||[]).join(", ") || "—";
     const slots = (s.time_slots||[]).join(", ") || "—";
     await tg("sendMessage", {
@@ -524,6 +571,7 @@ async function finalize(chat, user, s) {
 Слоты: ${slots}`
     });
 
+    // 7) Закрываем сессию
     s.step = "done";
     await rSet(`sess:${user.id}`, JSON.stringify(s), { EX: 600 });
     await rDel(`sess:${user.id}`);
@@ -532,6 +580,10 @@ async function finalize(chat, user, s) {
     await tg("sendMessage", { chat_id: chat, text: "⚠️ Не удалось сохранить. Попробуй ещё раз: /start" });
   }
 }
+
+
+
+
 
 /* ---------------- Entry ---------------- */
 export default async function handler(req,res){
