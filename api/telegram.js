@@ -998,11 +998,12 @@ async function onCallback(q) {
     if (s.step !== "time") { await answerCb(); return; }
     const day = data.slice(4);
     const i = s.time_days.indexOf(day);
-    if (i>=0) s.time_days.splice(i,1); else c.time_days.push(day); // (еcли тут была кирилличеcкая "c", cмените на латинcкую "s")
+    if (i>=0) s.time_days.splice(i,1); else s.time_days.push(day);
     await putSess(uid, s);
     await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbTimeDaysSlots(s) });
     await answerCb(); return;
   }
+
   if (data.startsWith("q7s:")) {
     if (s.step !== "time") { await answerCb(); return; }
     const slot = data.slice(4);
