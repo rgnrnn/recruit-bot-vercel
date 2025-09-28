@@ -105,6 +105,19 @@ const rGet=(k)=> rGET(`/get/${encodeURIComponent(k)}`);
 const rDel=(k)=> rGET(`/del/${encodeURIComponent(k)}`);
 const rIncr=async(k,ex=60)=>{ const j=await rGET(`/incr/${encodeURIComponent(k)}`); if(j.result===1 && ex>0) await rGET(`/expire/${encodeURIComponent(k)}/${ex}`); return j.result; };
 async function rIncrNoTTL(k){ const j = await rGET(`/incr/${encodeURIComponent(k)}`); return j.result; }
+
+// --- Forms versioning (для глобального сброса лимитов)
+async function getFormsVersion() {
+  try {
+    const j = await rGet("forms:version");
+    const v = Number(j?.result || 1) || 1;
+    return v;
+  } catch { return 1; }
+}
+async function formsResetAll() {
+  try { await rIncrNoTTL("forms:version"); return true; } catch { return false; }
+}
+
 async function seenUpdate(id){ try{ const j=await rSet(`upd:${id}`,"1",{EX:180,NX:true}); return j&&("result"in j)? j.result==="OK" : true; }catch{return true;} }
 async function overRL(uid,limit=12){ try{return (await rIncr(`rl:${uid}`,60))>limit;}catch{return false;} }
 
@@ -268,10 +281,6 @@ function consistencyScore(about, interests, stack) {
   return Math.min(s, 95);
 }
 
-
-
-
-
 async function runLLM(u, s, submission_count){
   // ---------- базовые поля ----------
   const name   = (s.name || "").trim();
@@ -291,12 +300,11 @@ async function runLLM(u, s, submission_count){
     return letters ? vowels/letters : 0;
   }
   function looksRandomWord(w){
-    // «подозрительные» короткие бессмысленные токены латиницей или смешанные
     if (!w) return false;
     const lower = w.toLowerCase();
-    if (/^[a-z]{2,}$/i.test(w) && vowelRatio(w) < 0.28) return true;               // мало гласных
-    if (/[бвгджзйклмнпрстфхцчшщ]{4,}/i.test(lower)) return true;                  // длинные кластеры согласных
-    if (/([a-z])\1{2,}/i.test(lower) || /([а-я])\1{2,}/i.test(lower)) return true;// повторящиеся буквы
+    if (/^[a-z]{2,}$/i.test(w) && vowelRatio(w) < 0.28) return true;
+    if (/[бвгджзйклмнпрстфхцчшщ]{4,}/i.test(lower)) return true;
+    if (/([a-z])\1{2,}/i.test(lower) || /([а-я])\1{2,}/i.test(lower)) return true;
     return false;
   }
   function collectNameFlags(n){
@@ -306,11 +314,9 @@ async function runLLM(u, s, submission_count){
     if (!/[А-ЯЁA-Z]/.test(n.charAt(0))) flags.push("name_bad_capitalization");
     const words = n.split(/\s+/).filter(Boolean);
     if (words.length < 2) flags.push("name_one_word");
-    // язык/скрипт
     const hasRu = /[А-Яа-яЁё]/.test(n);
     const hasEn = /[A-Za-z]/.test(n);
     if (!hasRu && !hasEn) flags.push("name_non_ru_en");
-    // «псевдоним»/рандомка
     if (/^(test|anon|user|qwe|asdf|тест)/i.test(n)) flags.push("name_test_like");
     if (vowelRatio(n) < 0.25) flags.push("name_low_vowel_ratio");
     if (looksRandomWord(n.replace(/\s+/g,""))) flags.push("name_looks_random");
@@ -324,7 +330,6 @@ async function runLLM(u, s, submission_count){
     if (!/[.!?]/.test(t)) flags.push("about_no_sentences");
     if (/(?:asdf|qwer|йцук|ячсм|лол|кек|dfg|sdf|zxc){2,}/i.test(t)) flags.push("about_gibberish_sequences");
     if (/^[A-Za-z]{2,}\s[A-Za-z]{2,}$/.test(t) && len < 25) flags.push("about_two_random_words");
-    // очень мало букв, много прочих символов — шум
     const letters = (t.match(LETTERS_RE)||[]).length;
     if (letters && (letters/Math.max(1,len)) < 0.5) flags.push("about_low_letter_ratio");
     return flags;
@@ -365,9 +370,7 @@ async function runLLM(u, s, submission_count){
   const timeCommitmentHeur = slotsCount>=6 ? "11–20ч" : slotsCount>=3 ? "6–10ч" : "≤5ч";
   const linksInAbout = (about.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0, 5);
 
-  // -------------- локальный фолбэк (если нет ключа) --------------
   function localFallback(){
-    // базовая формула с сильным штрафом за «красные флаги» и повторы
     let score = 80;
     if (nameFlags.length)  score -= Math.min(40, nameFlags.length*8);
     if (aboutFlags.length) score -= Math.min(40, aboutFlags.length*8);
@@ -415,17 +418,16 @@ ${risks.length? risks.map(x=>"• "+x).join("\n"):"• не обнаружено
   }
   if (!OPENAI_API_KEY) return localFallback();
 
-  // -------------- OpenAI — главный оценщик --------------
   try {
     const SYSTEM =
 `Ты опытный технический рекрутер. Пиши по-русски.
 Взвесь качество анкеты и верни СТРОГО JSON со структурой:
 {
-  "fit_score": 0..100,                       // снизить за red_flags и повторы
-  "red_flags": ["..."],                      // перечисли выявленные риски («нереалистичное имя», «о себе чушь/слишком коротко», «нет связки интересов/стека», «повторы» и т.п.)
+  "fit_score": 0..100,
+  "red_flags": ["..."],
   "strengths": ["..."],
-  "risks": ["..."],                          // детальный разбор рисков (не дублируй red_flags дословно, а раскрой)
-  "recommendations": ["..."],                // конкретные шаги улучшения
+  "risks": ["..."],
+  "recommendations": ["..."],
   "roles": ["..."],
   "stack": ["..."],
   "work_style": {"builder":0..1,"architect":0..1,"researcher":0..1,"operator":0..1,"integrator":0..1},
@@ -433,11 +435,7 @@ ${risks.length? risks.map(x=>"• "+x).join("\n"):"• не обнаружено
   "links": ["..."],
   "summary": "3–6 абзацев: факторы, плюсы, риски, рекомендации и финальная строка 'Итоговый балл: X/100 (<категория>)'. Без Markdown."
 }
-Жёстко наказывай за:
-- нереалистичное имя (латиница/кириллица без смысла, псевдоним, цифры/подчёркивания, одна «абракадабра»);
-- «о себе» бессмысленное/слишком короткое/без пунктуации/с «рандомными» токенами;
-- отсутствие связки «о себе» с интересами/стеком;
-- многократные повторы (submission_count>1).`;
+Жёстко наказывай за нереалистичное имя, бессмысленное/слишком короткое «о себе», отсутствие связки с интересами/стеком и повторы (submission_count>1).`;
 
     const USER = JSON.stringify({
       raw: {
@@ -447,9 +445,9 @@ ${risks.length? risks.map(x=>"• "+x).join("\n"):"• не обнаружено
         submission_count
       },
       signals: {
-        name_flags: nameFlags,
-        about_flags: aboutFlags,
-        consistency: cons,
+        name_flags: collectNameFlags(name),
+        about_flags: collectAboutFlags(about),
+        consistency: consistencySignals(about, ints, stk),
         repeats
       },
       heuristics: { workStyle, timeCommitmentHeur, linksInAbout }
@@ -488,14 +486,6 @@ ${risks.length? risks.map(x=>"• "+x).join("\n"):"• не обнаружено
   }
 }
 
-
-
-
-
-
-
-
-
 /* ---------------- Запись строки в Sheets ---------------- */
 async function appendSheets(row){
   if (!SHEETS_URL || !SHEETS_SECRET) return {ok:false, skipped:true};
@@ -505,9 +495,6 @@ async function appendSheets(row){
   }).then(x=>x.json()).catch((e)=>({ok:false, error:String(e)}));
   return res;
 }
-
-
-
 
 // Уведомление администратора о новой анкете
 function chunkText(str, max = 3500) {
@@ -539,20 +526,14 @@ ${llm.summary || "summary не сгенерирован"}`;
   }
 }
 
-
-
-
-
-
-
-
-
-
 /* ---------------- Финализация анкеты ---------------- */
 async function finalize(chat, user, s) {
   try {
+    // Версия счётчиков (для глобального сброса лимитов)
+    const ver = await getFormsVersion();
+    const cntKey = `forms:v${ver}:${user.id}:count`;
+
     // 1) Сколько раз уже заполнял (persist без TTL)
-    const cntKey = `forms:${user.id}:count`;
     let cnt = 0;
     try { const j = await rGet(cntKey); cnt = Number(j?.result || 0) || 0; } catch {}
     const submission_count = cnt + 1;
@@ -619,10 +600,6 @@ async function finalize(chat, user, s) {
     await tg("sendMessage", { chat_id: chat, text: "⚠️ Не удалось сохранить. Попробуй ещё раз: /start" });
   }
 }
-
-
-
-
 
 /* ---------------- Entry ---------------- */
 export default async function handler(req,res){
@@ -770,6 +747,13 @@ async function onMessage(m){
         const raw = j?.result || "";
         await tg("sendMessage", { chat_id: chat, text: raw ? `sess:${uid}\n\`\`\`\n${raw}\n\`\`\`` : "пусто", parse_mode: "Markdown" });
       } catch(e) { await tg("sendMessage", { chat_id: chat, text: `err: ${e?.message || e}` }); }
+      return;
+    }
+
+    // NEW: глобальный сброс лимитов по команде админа
+    if (isAdmin(uid) && text === "/forms_reset_all") {
+      const ok = await formsResetAll();
+      await tg("sendMessage", { chat_id: chat, text: ok ? "✅ Лимиты анкет сброшены для всех пользователей." : "⚠️ Не удалось сбросить лимиты." });
       return;
     }
 
@@ -960,23 +944,22 @@ async function onCallback(q) {
     return;
   }
 
-if (data === "consent_no") {
-  if (s.step !== "consent") { await answerCb(); return; }
-  // 1) снимаем клавиатуру у приветственного сообщения
-  try {
-    await tg("editMessageReplyMarkup", {
-      chat_id: chat,
-      message_id: q.message.message_id,
-      reply_markup: { inline_keyboard: [] }
-    });
-  } catch {}
-  // 2) отдельным сообщением — отказ
-  await tg("sendMessage", { chat_id: chat, text: "Ок. Если передумаешь — набери /start." });
-  await delSess(uid);
-  await answerCb();
-  return;
-}
-
+  if (data === "consent_no") {
+    if (s.step !== "consent") { await answerCb(); return; }
+    // 1) снимаем клавиатуру у приветственного сообщения
+    try {
+      await tg("editMessageReplyMarkup", {
+        chat_id: chat,
+        message_id: q.message.message_id,
+        reply_markup: { inline_keyboard: [] }
+      });
+    } catch {}
+    // 2) отдельным сообщением — отказ
+    await tg("sendMessage", { chat_id: chat, text: "Ок. Если передумаешь — набери /start." });
+    await delSess(uid);
+    await answerCb();
+    return;
+  }
 
   if (data.startsWith("age:")) {
     if (s.step !== "age") { await answerCb(); return; }
@@ -1074,6 +1057,23 @@ if (data === "consent_no") {
       await tg("sendMessage", { chat_id: chat, text: "отметь хотя бы один день и один временной слот" });
       await answerCb(); return;
     }
+
+    // NEW: лимит на 5 отправок (кроме админа)
+    if (!isAdmin(uid)) {
+      const ver = await getFormsVersion();
+      const cntKey = `forms:v${ver}:${uid}:count`;
+      let cnt = 0;
+      try { const j = await rGet(cntKey); cnt = Number(j?.result || 0) || 0; } catch {}
+      if (cnt >= 5) {
+        await answerCb();
+        await tg("sendMessage", {
+          chat_id: chat,
+          text: "⛔ Лимит на количество отправок анкеты исчерпан (5/5). Если есть важные дополнения — свяжись с админом."
+        });
+        return;
+      }
+    }
+
     await answerCb("Секунду, записываю…");
     await finalize(chat, { id: uid, username: q.from.username }, s);
     return;
