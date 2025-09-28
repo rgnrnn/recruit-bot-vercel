@@ -117,7 +117,7 @@ async function formsResetAll() {
   try { await rIncrNoTTL("forms:version"); return true; } catch { return false; }
 }
 
-// --- чтение/миграция счётчика отправок (legacy учитывается ТОЛЬКО при версии 1)
+// --- счётчик отправок (legacy учитываем ТОЛЬКО при версии 1)
 async function getSubmitCount(uid) {
   const ver = await getFormsVersion();
   const keyVer = `forms:v${ver}:${uid}:count`;
@@ -125,7 +125,7 @@ async function getSubmitCount(uid) {
   try { const j = await rGet(keyVer); cnt = Number(j?.result || 0) || 0; } catch {}
   if (ver === 1) {
     try {
-      const j2 = await rGet(`forms:${uid}:count`); // legacy-ключ
+      const j2 = await rGet(`forms:${uid}:count`);
       const legacy = Number(j2?.result || 0) || 0;
       if (legacy > cnt) { cnt = legacy; try { await rSet(keyVer, String(legacy)); } catch {} }
     } catch {}
@@ -133,8 +133,39 @@ async function getSubmitCount(uid) {
   return { count: cnt, key: keyVer, version: ver };
 }
 
-async function seenUpdate(id){ try{ const j=await rSet(`upd:${id}`,"1",{EX:180,NX:true}); return j&&("result"in j)? j.result==="OK" : true; }catch{return true;} }
-async function overRL(uid,limit=12){ try{return (await rIncr(`rl:${uid}`,60))>limit;}catch{return false;} }
+// --- snapshot предыдущей анкеты (для diff и динамики)
+function makeSnapshot(s){
+  return {
+    name: s.name || "",
+    about: s.about || "",
+    interests: Array.isArray(s.interests)? [...s.interests] : [],
+    stack: Array.isArray(s.stack)? [...s.stack] : [],
+    a1: s.a1 || "", a2: s.a2 || "", a3: s.a3 || "",
+    time_days: Array.isArray(s.time_days)? [...s.time_days] : [],
+    time_slots: Array.isArray(s.time_slots)? [...s.time_slots] : []
+  };
+}
+async function getPrevSnapshot(uid){
+  const ver = await getFormsVersion();
+  const key = `forms:last:v${ver}:${uid}`;
+  try{
+    const j = await rGet(key);
+    if (!j?.result) return { key, snap: null };
+    return { key, snap: JSON.parse(j.result) };
+  }catch{ return { key, snap: null }; }
+}
+async function setPrevSnapshot(uid, snap){
+  const ver = await getFormsVersion();
+  const key = `forms:last:v${ver}:${uid}`;
+  try{ await rSet(key, JSON.stringify(snap), { EX: 3600*24*180 }); }catch{}
+}
+function arrDiff(prev=[], curr=[]){
+  const p = new Set(prev); const c = new Set(curr);
+  const added   = [...c].filter(x=>!p.has(x));
+  const removed = [...p].filter(x=>!c.has(x));
+  const same    = [...c].filter(x=>p.has(x));
+  return { added, removed, same };
+}
 
 /* ---------------- Writer (Apps Script) ---------------- */
 async function writer(op, payload = {}, asText = false) {
@@ -264,217 +295,115 @@ async function sendTime(chat, sess){
   });
 }
 
-/* ---------------- LLM (главный + фолбэк) ---------------- */
-function nameRealismScore(name) {
-  const n = (name||"").trim(); if (!n) return 0;
-  if (n.length < 2 || n.length > 80) return 10;
-  if (/^[a-zA-Zа-яА-ЯёЁ\-\'\s]+$/.test(n) === false) return 20;
-  let score = 70;
-  if (/\s/.test(n)) score += 15;
-  if (/^[А-ЯЁA-Z][а-яёa-z]+(?:\s+[А-ЯЁA-Z][а-яёa-z]+)+$/.test(n)) score += 10;
-  return Math.min(score, 95);
-}
-function aboutQualityScore(about) {
-  const t = (about||"").trim(); if (!t) return 0;
-  let score = 50;
-  if (t.length > 80) score += 10;
-  if (t.length > 200) score += 10;
-  if (/[.!?]\s/.test(t)) score += 10;
-  if (/(github|gitlab|hh\.ru|linkedin|cv|resume|портфолио|pet)/i.test(t)) score += 10;
-  if (/fuck|дурак|лох|xxx/i.test(t)) score -= 30;
-  return Math.max(0, Math.min(score, 95));
-}
-function consistencyScore(about, interests, stack) {
-  const t = (about||"").toLowerCase();
-  const hasTech = (arr)=> (arr||[]).some(x => t.includes(String(x).toLowerCase().split(/[\/\s,]/)[0]||""));
-  let s = 50;
-  if (hasTech(interests)) s += 15;
-  if (hasTech(stack))     s += 15;
-  if (t.length > 100)     s += 10;
-  return Math.min(s, 95);
-}
+/* ---------------- LLM (главный + фолбэк, без «рекомендаций») ---------------- */
+function nameRealismScore(name) { const n=(name||"").trim(); if(!n) return 0; if(n.length<2||n.length>80) return 10; if(/^[a-zA-Zа-яА-ЯёЁ\-\'\s]+$/.test(n)===false) return 20; let score=70; if(/\s/.test(n)) score+=15; if(/^[А-ЯЁA-Z][а-яёa-z]+(?:\s+[А-ЯЁA-Z][а-яёa-z]+)+$/.test(n)) score+=10; return Math.min(score,95); }
+function aboutQualityScore(about) { const t=(about||"").trim(); if(!t) return 0; let score=50; if(t.length>80) score+=10; if(t.length>200) score+=10; if(/[.!?]\s/.test(t)) score+=10; if(/(github|gitlab|hh\.ru|linkedin|cv|resume|портфолио|pet)/i.test(t)) score+=10; if(/fuck|дурак|лох|xxx/i.test(t)) score-=30; return Math.max(0,Math.min(score,95)); }
+function consistencyScore(about, interests, stack) { const t=(about||"").toLowerCase(); const hasTech=(arr)=> (arr||[]).some(x=> t.includes(String(x).toLowerCase().split(/[\/\s,]/)[0]||"")); let s=50; if(hasTech(interests)) s+=15; if(hasTech(stack)) s+=15; if(t.length>100) s+=10; return Math.min(s,95); }
 
-async function runLLM(u, s, submission_count){
+async function runLLM(u, s, submission_count, prevSnap=null, diffs=null){
   const name   = (s.name || "").trim();
   const about  = (s.about || "").trim();
-  const ints   = (s.interests || []).slice(0, 12);
-  const stk    = (s.stack || []).slice(0, 12);
+  const interests = (s.interests || []).slice(0,12);
+  const stack     = (s.stack || []).slice(0,12);
 
-  const VOWELS_RE = /[аеёиоуыэюяaeiouy]/ig;
-  const LETTERS_RE = /[a-zа-яё]/ig;
-  const vowelRatio = (str)=> {
-    const letters = (String(str).match(LETTERS_RE)||[]).length;
-    const vowels  = (String(str).match(VOWELS_RE)||[]).length;
-    return letters ? vowels/letters : 0;
-  };
-  const looksRandomWord = (w)=>{
-    if (!w) return false;
-    const lower = w.toLowerCase();
-    if (/^[a-z]{2,}$/i.test(w) && vowelRatio(w) < 0.28) return true;
-    if (/[бвгджзйклмнпрстфхцчшщ]{4,}/i.test(lower)) return true;
-    if (/([a-z])\1{2,}/i.test(lower) || /([а-я])\1{2,}/i.test(lower)) return true;
-    return false;
-  };
+  // локальные сигналы (как раньше)
+  const nScore = nameRealismScore(name);
+  const aScore = aboutQualityScore(about);
+  const cScore = consistencyScore(about, interests, stack);
+  const repPenalty = Math.max(0, (submission_count-1)*7);
+  let localScore = Math.max(0, Math.min(100, Math.round(nScore*0.25 + aScore*0.45 + cScore*0.30) - repPenalty));
 
-  const nameFlags = (()=> {
-    const flags = [];
-    if (!name) { flags.push("name_empty"); return flags; }
-    if (/[0-9_]/.test(name)) flags.push("name_has_digits_or_underscores");
-    if (!/[А-ЯЁA-Z]/.test(name.charAt(0))) flags.push("name_bad_capitalization");
-    const words = name.split(/\s+/).filter(Boolean);
-    if (words.length < 2) flags.push("name_one_word");
-    const hasRu = /[А-Яа-яЁё]/.test(name);
-    const hasEn = /[A-Za-z]/.test(name);
-    if (!hasRu && !hasEn) flags.push("name_non_ru_en");
-    if (/^(test|anon|user|qwe|asdf|тест)/i.test(name)) flags.push("name_test_like");
-    if (vowelRatio(name) < 0.25) flags.push("name_low_vowel_ratio");
-    if (looksRandomWord(name.replace(/\s+/g,""))) flags.push("name_looks_random");
-    return flags;
-  })();
+  // Локальный fallback (без «Рекомендаций»)
+  const localSummary =
+`Итоговый балл: ${localScore}/100 (${localScore>=80?"сильный кандидат":localScore>=65?"хороший кандидат":localScore>=50?"пограничный":"низкий"}).
 
-  const aboutFlags = (()=> {
-    const t = about; const flags=[];
-    const len = t.length;
-    if (len < 30) flags.push("about_too_short");
-    if (vowelRatio(t) < 0.30) flags.push("about_low_vowel_ratio");
-    if (!/[.!?]/.test(t)) flags.push("about_no_sentences");
-    if (/(?:asdf|qwer|йцук|ячсм|лол|кек|dfg|sdf|zxc){2,}/i.test(t)) flags.push("about_gibberish_sequences");
-    if (/^[A-Za-z]{2,}\s[A-Za-z]{2,}$/.test(t) && len < 25) flags.push("about_two_random_words");
-    const letters = (t.match(LETTERS_RE)||[]).length;
-    if (letters && (letters/Math.max(1,len)) < 0.5) flags.push("about_low_letter_ratio");
-    return flags;
-  })();
+Факторы:
+• Имя — ${nScore>=70?"реалистично":"вызывает сомнения"} (≈${nScore}/95).
+• «О себе» — ${aScore>=60?"содержательно":"скудно/без структуры"} (≈${aScore}/95).
+• Согласованность с интересами/стеком — ${cScore>=60?"есть пересечения":"слабая/нет пересечений"} (≈${cScore}/95).
+• Повторные попытки: ${submission_count-1} (штраф ${repPenalty}).`;
 
-  const consistencySignals = (()=> {
-    const text = about.toLowerCase();
-    const tokens = new Set(text.split(/[^a-zа-яё0-9+]+/i).filter(Boolean));
-    const norm = s=> String(s||"").toLowerCase().replace(/[^\w+]+/g," ").split(/\s+/).filter(Boolean);
-    const iw = ints.flatMap(norm), sw = stk.flatMap(norm);
-    const hitInt = iw.filter(w=>tokens.has(w)).length;
-    const hitStk = sw.filter(w=>tokens.has(w)).length;
-    const flags = [];
-    if (ints.length && hitInt===0) flags.push("no_interests_in_about");
-    if (stk.length  && hitStk===0) flags.push("no_stack_in_about");
-    return { hitInt, hitStk, flags };
-  })();
-
-  const repeats = Math.max(0, submission_count - 1);
-
-  // work_style (из ответов)
-  const workStyle = { builder:0.5, architect:0.2, researcher:0.1, operator:0.1, integrator:0.1 };
-  switch (s.a1) {
-    case "быстро прототипирую": workStyle.builder+=0.2; break;
-    case "проектирую основательно": workStyle.architect+=0.2; break;
-    case "исследую гипотезы": workStyle.researcher+=0.2; break;
-    case "синхронизирую людей": workStyle.integrator+=0.2; break;
-  }
-  if (s.a2 === "MVP важнее идеала") workStyle.builder+=0.1;
-  if (s.a2 === "полирую до совершенства") workStyle.architect+=0.1;
-  if (s.a3 === "риск/скорость") workStyle.builder+=0.1;
-  if (s.a3 === "надёжность/предсказуемость") workStyle.operator+=0.1;
-  Object.keys(workStyle).forEach(k=> workStyle[k]= Number(Math.max(0, Math.min(1, workStyle[k])).toFixed(2)));
-
-  const slotsCount = (s.time_days?.length || 0) + (s.time_slots?.length || 0);
-  const timeCommitmentHeur = slotsCount>=6 ? "11–20ч" : slotsCount>=3 ? "6–10ч" : "≤5ч";
-  const linksInAbout = (about.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0, 5);
-
-  // Локальный фолбэк
-  function localFallback(){
-    let score = 80;
-    if (nameFlags.length)  score -= Math.min(40, nameFlags.length*8);
-    if (aboutFlags.length) score -= Math.min(40, aboutFlags.length*8);
-    if (consistencySignals.flags.length) score -= Math.min(30, consistencySignals.flags.length*10);
-    score -= Math.min(35, repeats*7);
-    score = Math.max(0, Math.min(100, score));
-    const bucket = score>=80 ? "сильный кандидат" : score>=65 ? "хороший кандидат" : score>=50 ? "пограничный" : "низкий";
-
-    const strengths = [];
-    if (!nameFlags.length) strengths.push("имя выглядит реалистично");
-    if (!aboutFlags.includes("about_too_short") && !aboutFlags.includes("about_gibberish_sequences")) strengths.push("«о себе» выглядит осмысленно");
-    if (consistencySignals.hitInt>0 || consistencySignals.hitStk>0) strengths.push("есть пересечение «о себе» с интересами/стеком");
-
-    const risks = [
-      ...nameFlags.map(f=>"name: "+f),
-      ...aboutFlags.map(f=>"about: "+f),
-      ...consistencySignals.flags.map(f=>"consistency: "+f)
-    ];
-    if (repeats>0) risks.push(`повторы заполнений: ${repeats}`);
-
-    const summary =
-`Итоговый балл: ${score}/100 (${bucket}).
-
-Плюсы:
-${strengths.length? strengths.map(x=>"• "+x).join("\n"):"• явных плюсов нет"}
-
-Риски/флаги:
-${risks.length? risks.map(x=>"• "+x).join("\n"):"• не обнаружено"}
-
-Рекомендации:
-• Укажи реальное имя (кириллица/корректная латиница, имя и фамилия).
-• Разверни «о себе» (минимум 150–300 символов) с примерами и ссылками.
-• Свяжи «о себе» с отмеченными интересами и стеком (2–3 совпадения).
-• Сократи число повторных попыток (штрафуется).`;
-
+  if (!OPENAI_API_KEY) {
     return {
-      fit_score: score,
-      roles: ints.slice(0,6),
-      stack: stk.slice(0,8),
-      work_style: workStyle,
-      time_commitment: timeCommitmentHeur,
-      links: linksInAbout,
-      summary
+      fit_score: localScore,
+      roles: interests.slice(0,6),
+      stack: stack.slice(0,8),
+      work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
+      time_commitment: ((s.time_days?.length||0)+(s.time_slots?.length||0))>=6 ? "11–20ч" : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч",
+      links: (about.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0,5),
+      summary: localSummary,
+      ai_used: false,
     };
   }
-  if (!OPENAI_API_KEY) return localFallback();
 
   try {
     const SYSTEM =
-`Ты опытный технический рекрутер. Пиши по-русски.
-Верни СТРОГО JSON:
-{"fit_score":0..100,"red_flags":["..."],"strengths":["..."],"risks":["..."],"recommendations":["..."],"roles":["..."],"stack":["..."],"work_style":{"builder":0..1,"architect":0..1,"researcher":0..1,"operator":0..1,"integrator":0..1},"time_commitment":"≤5ч|6–10ч|11–20ч|>20ч","links":["..."],"summary":"3–6 абзацев: факторы, плюсы, риски, рекомендации и финальная строка 'Итоговый балл: X/100 (<категория>)'."}
-Наказывай балл за: нереалистичное имя, бессмысленное/короткое «о себе», отсутствие связки «о себе» с интересами/стеком, повторы.`;
+`Ты технический рекрутер. Пиши по-русски. Верни СТРОГО JSON.
+Схема JSON:
+{"fit_score":0..100,"strengths":["..."],"risks":["..."],"diff_conclusion":"короткий вывод о прогрессе/регрессе","summary":"4–6 абзацев: разбор факторов + динамика (что изменилось по сравнению с прошлой анкетой). Без блока рекомендаций."}
+Балл повышай при положительной динамике (добавлены релевантные интересы/стек, улучшен текст «о себе», стала выше согласованность и т. п.), понижай при регрессе/хаосе/фейковом имени/повторах.`;
 
     const USER = JSON.stringify({
-      raw: {
-        name, about, interests: ints, stack: stk,
+      now: {
+        name, about, interests, stack,
         a1: s.a1, a2: s.a2, a3: s.a3,
         time_days: s.time_days || [], time_slots: s.time_slots || [],
         submission_count
       },
-      signals: { name_flags: nameFlags, about_flags: aboutFlags, consistency: consistencySignals, repeats },
-      heuristics: { workStyle, timeCommitmentHeur, linksInAbout }
+      prev: prevSnap || null,
+      diffs: diffs || null,
+      local_signals: { nScore, aScore, cScore, repPenalty, localScore }
     }, null, 2);
 
     const body = {
       model: OPENAI_MODEL,
       temperature: 0.2,
       response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM },
-        { role: "user",   content: USER   }
-      ]
+      messages: [{ role: "system", content: SYSTEM }, { role: "user", content: USER }]
     };
 
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
-      method:"POST",
-      headers:{ "content-type":"application/json","authorization":"Bearer "+OPENAI_API_KEY },
+      method:"POST", headers:{ "content-type":"application/json","authorization":"Bearer "+OPENAI_API_KEY },
       body: JSON.stringify(body)
     }).then(x=>x.json()).catch(()=>null);
 
     const parsed = JSON.parse(r?.choices?.[0]?.message?.content || "null");
-    if (!parsed || typeof parsed.fit_score !== "number" || !parsed.summary) return localFallback();
-
+    if (!parsed || typeof parsed.fit_score !== "number" || !parsed.summary) {
+      return {
+        fit_score: localScore,
+        roles: interests.slice(0,6),
+        stack: stack.slice(0,8),
+        work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
+        time_commitment: ((s.time_days?.length||0)+(s.time_slots?.length||0))>=6 ? "11–20ч" : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч",
+        links: (about.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0,5),
+        summary: localSummary,
+        ai_used: true,
+      };
+    }
     return {
       fit_score: Math.max(0, Math.min(100, Math.round(parsed.fit_score))),
-      roles: Array.isArray(parsed.roles) && parsed.roles.length ? parsed.roles.slice(0,6) : ints.slice(0,6),
-      stack: Array.isArray(parsed.stack) && parsed.stack.length ? parsed.stack.slice(0,8) : stk.slice(0,8),
-      work_style: typeof parsed.work_style==="object" ? parsed.work_style : workStyle,
-      time_commitment: parsed.time_commitment || timeCommitmentHeur,
-      links: Array.isArray(parsed.links) ? parsed.links.slice(0,5) : linksInAbout,
-      summary: String(parsed.summary).slice(0,4000)
+      roles: interests.slice(0,6),
+      stack: stack.slice(0,8),
+      work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
+      time_commitment: ((s.time_days?.length||0)+(s.time_slots?.length||0))>=6 ? "11–20ч" : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч",
+      links: (about.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0,5),
+      summary: String(parsed.summary).slice(0,4000),
+      ai_used: true,
+      strengths: parsed.strengths || [],
+      risks: parsed.risks || [],
+      diff_conclusion: parsed.diff_conclusion || ""
     };
   } catch {
-    return localFallback();
+    return {
+      fit_score: localScore,
+      roles: interests.slice(0,6),
+      stack: stack.slice(0,8),
+      work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
+      time_commitment: ((s.time_days?.length||0)+(s.time_slots?.length||0))>=6 ? "11–20ч" : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч",
+      links: (about.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0,5),
+      summary: localSummary,
+      ai_used: true
+    };
   }
 }
 
@@ -488,27 +417,38 @@ async function appendSheets(row){
   return res;
 }
 
-// Уведомление администратора о новой анкете
+// Уведомление администратора
 function chunkText(str, max = 3500) {
-  const out = []; const s = String(str);
+  const out = []; const s = String(str||"");
   for (let i = 0; i < s.length; i += max) out.push(s.slice(i, i + max));
   return out;
 }
-async function notifyAdminOnFinish(user, s, llm, whenISO) {
+async function notifyAdminOnFinish(user, s, llm, whenISO, submission_count, diffs) {
   if (!ADMIN_ID) return;
   const header =
-`🆕 Новая анкета
+`🆕 Новая анкета (№${submission_count})
 Время: ${whenISO}
 Telegram: ${user?.username ? "@"+user.username : user?.id}
 User ID: ${user?.id}
 Source: ${s.source || "-"}
-Fit score: ${typeof llm.fit_score === "number" ? llm.fit_score : "—"}`;
+Fit score: ${typeof llm.fit_score === "number" ? llm.fit_score : "—"}
+AI(OpenAI): ${llm.ai_used ? "да" : "нет"}`;
 
-  const roles = (llm.roles || s.interests || []).slice(0,3).join(", ") || "—";
-  const stack = (llm.stack || s.stack || []).slice(0,4).join(", ") || "—";
+  const diffLines = [];
+  if (diffs) {
+    const fmt = (a)=> a && a.length ? a.join(", ") : "—";
+    diffLines.push("— Динамика с прошлой анкеты —");
+    diffLines.push(`Добавлено (интересы): ${fmt(diffs.interests?.added)}`);
+    diffLines.push(`Удалено (интересы): ${fmt(diffs.interests?.removed)}`);
+    diffLines.push(`Добавлено (стек): ${fmt(diffs.stack?.added)}`);
+    diffLines.push(`Удалено (стек): ${fmt(diffs.stack?.removed)}`);
+    if (diffs.nameChanged)  diffLines.push(`Имя: изменилось («${diffs.prev?.name || "—"}» → «${s.name||"—"}» )`);
+    if (diffs.aboutChanged) diffLines.push(`О себе: длина ${diffs.prev?.about?.length||0} → ${s.about?.length||0}`);
+    if (llm.diff_conclusion) diffLines.push(`Вывод AI по динамике: ${llm.diff_conclusion}`);
+  }
+
   const body =
-`Роли: ${roles}
-Стек: ${stack}
+`${diffLines.join("\n")}
 
 ${llm.summary || "summary не сгенерирован"}`;
 
@@ -516,6 +456,17 @@ ${llm.summary || "summary не сгенерирован"}`;
   for (const part of chunkText(body)) {
     await tg("sendMessage", { chat_id: ADMIN_ID, text: part });
   }
+
+  // Вопрос про видео-приглашение
+  const score = Number(llm.fit_score || 0);
+  await tg("sendMessage", {
+    chat_id: ADMIN_ID,
+    text: "Отправить видео-приглашение со ссылкой на большую анкету?",
+    reply_markup: { inline_keyboard: [[
+      { text:"Да",  callback_data: `admin_videoinvite:yes:${user.id}:${score}` },
+      { text:"Нет", callback_data: `admin_videoinvite:no:${user.id}` }
+    ]]}
+  });
 }
 
 /* ---------------- Финализация анкеты ---------------- */
@@ -524,12 +475,28 @@ async function finalize(chat, user, s) {
     const ver = await getFormsVersion();
     const cntKey = `forms:v${ver}:${user.id}:count`;
 
+    // текущий номер отправки
     let cnt = 0;
     try { const j = await rGet(cntKey); cnt = Number(j?.result || 0) || 0; } catch {}
     const submission_count = cnt + 1;
 
-    const llm = await runLLM(user, s, submission_count) || {};
+    // diff с предыдущей анкетой
+    const { key: prevKey, snap: prevSnap } = await getPrevSnapshot(user.id);
+    const diffs = (() => {
+      if (!prevSnap) return null;
+      return {
+        prev: { name: prevSnap.name, about: prevSnap.about },
+        nameChanged: (prevSnap.name||"") !== (s.name||""),
+        aboutChanged: (prevSnap.about||"") !== (s.about||""),
+        interests: arrDiff(prevSnap.interests||[], s.interests||[]),
+        stack:     arrDiff(prevSnap.stack||[],     s.stack||[])
+      };
+    })();
 
+    // Оценка/summary (AI главный; в JSON добавляем ai_used)
+    const llm = await runLLM(user, s, submission_count, prevSnap, diffs) || {};
+
+    // формируем строку для Sheets (25 колонок; source — 6-я)
     const nowISO = new Date().toISOString();
     const row = [
       nowISO,
@@ -561,19 +528,22 @@ async function finalize(chat, user, s) {
     ];
 
     await appendSheets(row);
-    try { await notifyAdminOnFinish(user, s, llm, nowISO); } catch {}
 
+    // уведомляем админа (включая № отправки и AI-флаг)
+    try { await notifyAdminOnFinish(user, s, llm, nowISO, submission_count, diffs); } catch {}
+
+    // обновляем счётчик и снапшот
     try { await rIncrNoTTL(cntKey); } catch {}
+    try { await setPrevSnapshot(user.id, makeSnapshot(s)); } catch {}
 
+    // пользователю — финальное сообщение
     const days  = (s.time_days||[]).join(", ") || "—";
     const slots = (s.time_slots||[]).join(", ") || "—";
-    await tg("sendMessage", {
-      chat_id: chat,
-      text: `готово! анкета записана ✅
+    await tg("sendMessage", { chat_id: chat, text: `готово! анкета записана ✅
 Дни: ${days}
-Слоты: ${slots}`
-    });
+Слоты: ${slots}` });
 
+    // закрываем сессию
     s.step = "done";
     await rSet(`sess:${user.id}`, JSON.stringify(s), { EX: 600 });
     await rDel(`sess:${user.id}`);
@@ -702,7 +672,7 @@ async function onMessage(m){
   const chat = m.chat.id;
   const text = (m.text || "").trim();
 
-  // ---- bridge: подхват источника, записанного WebApp-эндпоинтом
+  // bridge source
   try {
     const j = await rGet(`user_src:${uid}`);
     const seen = (j && j.result) || "";
@@ -714,35 +684,23 @@ async function onMessage(m){
     }
   } catch {}
 
-  // Админ-команды / быстрые диагностики
   if (text.startsWith("/")) {
-    if (text === "/mysrc") {
-      const s0 = await getSess(uid);
-      await tg("sendMessage", { chat_id: chat, text: `source = ${s0.source || "<empty>"}` });
-      return;
-    }
-    if (text === "/whoami") { await tg("sendMessage", { chat_id: chat, text: `uid = ${uid}` }); return; }
+    if (text === "/mysrc") { const s0 = await getSess(uid); await tg("sendMessage",{chat_id:chat,text:`source = ${s0.source || "<empty>"}`}); return; }
+    if (text === "/whoami") { await tg("sendMessage",{chat_id:chat,text:`uid = ${uid}`}); return; }
     if (text === "/dbg_sess") {
-      try {
-        const j = await rGet(`sess:${uid}`);
-        const raw = j?.result || "";
-        await tg("sendMessage", { chat_id: chat, text: raw ? `sess:${uid}\n\`\`\`\n${raw}\n\`\`\`` : "пусто", parse_mode: "Markdown" });
-      } catch(e) { await tg("sendMessage", { chat_id: chat, text: `err: ${e?.message || e}` }); }
+      try { const j = await rGet(`sess:${uid}`); const raw = j?.result || ""; await tg("sendMessage",{chat_id:chat,text: raw?`sess:${uid}\n\`\`\`\n${raw}\n\`\`\``:"пусто", parse_mode:"Markdown"}); }
+      catch(e){ await tg("sendMessage",{chat_id:chat,text:`err: ${e?.message || e}`}); }
       return;
     }
-
-    // глобальный сброс лимитов по команде админа
     if (isAdmin(uid) && text === "/forms_reset_all") {
       const ok = await formsResetAll();
-      await tg("sendMessage", { chat_id: chat, text: ok ? "✅ Лимиты анкет сброшены для всех пользователей." : "⚠️ Не удалось сбросить лимиты." });
+      await tg("sendMessage",{chat_id:chat,text: ok? "✅ Лимиты анкет сброшены для всех пользователей." : "⚠️ Не удалось сбросить лимиты."});
       return;
     }
-
     const handled = await handleAdminCommand({ text, uid, chat }, tg);
     if (handled) return;
   }
 
-  // mini-agent (admin-only)
   if (await handleAdminAgentMessage({ text, uid, chat }, tg, writer)) return;
 
   const s = await getSess(uid);
@@ -831,11 +789,12 @@ async function onMessage(m){
 async function onCallback(q) {
   const uid  = q.from.id;
   const data = q.data || "";
+  const chat = q.message.chat.id;
 
   const answerCb = (text = "", alert = false) =>
     tg("answerCallbackQuery", { callback_query_id: q.id, text, show_alert: alert });
 
-  // ответы по инвайтам (для всех)
+  // ответы кандидатов на приглашение
   if (/^invite:(yes|no):/.test(data)) {
     const m = data.match(/^invite:(yes|no):(.+)$/);
     const status = m[1] === "yes" ? "accepted" : "declined";
@@ -846,16 +805,54 @@ async function onCallback(q) {
       if (status === "accepted") {
         const followup =
 `спасибо за интерес к проекту и «синюю кнопку».
-дальше — этап взаимного выбора: большая анкета.
-перейти: https://docs.google.com/forms/d/e/1FAIpQLSffh081Qv_UXdrFAT0112ehjPHzgY2OhgbXv-htShFJyOgJcA/viewform?usp=sharing`;
-        await tg("sendMessage", { chat_id: q.message.chat.id, text: followup });
+дальше — большая анкета для партнёров:
+https://docs.google.com/forms/d/e/1FAIpQLSffh081Qv_UXdrFAT0112ehjPHzgY2OhgbXv-htShFJyOgJcA/viewform?usp=sharing`;
+        await tg("sendMessage", { chat_id: chat, text: followup });
       }
-    } catch {
+    } catch (e) {
       await answerCb("Ошибка, попробуйте ещё раз", true);
     }
     return;
   }
 
+  // inline-кнопки: «Отправить видео-приглашение?»
+  if (/^admin_videoinvite:(yes|no):/.test(data)) {
+    if (!isAdmin(uid)) { await answerCb(); return; }
+    const m = data.match(/^admin_videoinvite:(yes|no):(\d+)(?::(\d+))?$/);
+    if (!m) { await answerCb(); return; }
+    const yesNo = m[1];
+    const targetId = Number(m[2]);
+    const score = Number(m[3] || 0);
+
+    if (yesNo === "yes") {
+      if (score >= 20) {
+        const text =
+`Видео-приглашение в проект https://drive.google.com/file/d/1EUypFONNL2HEY6JJsvYf4WrzQiZxxUPF/view?usp=sharing
+видео сгенерировано нейросетью
+выберите «Да» если ок`;
+        const invite_id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`;
+        try { await writer("invites_log_add", { invite_id, telegram_id: String(targetId), text }); } catch {}
+        await tg("sendMessage", {
+          chat_id: targetId,
+          text,
+          reply_markup: { inline_keyboard: [[
+            { text:"Да", callback_data:`invite:yes:${invite_id}` },
+            { text:"Нет", callback_data:`invite:no:${invite_id}` }
+          ]]}
+        });
+        await answerCb("Отправлено кандидату");
+      } else {
+        await tg("sendMessage", { chat_id: targetId, text: "По результатам Вашего теста получен отрицательный ответ" });
+        await answerCb("Сообщение кандидату отправлено");
+      }
+    } else {
+      await tg("sendMessage", { chat_id: targetId, text: "По результатам Вашего теста получен отрицательный ответ" });
+      await answerCb("Сообщение кандидату отправлено");
+    }
+    return;
+  }
+
+  // admin-agent callbacks
   if (await handleAdminAgentCallback(q, tg, writer)) return;
 
   if (data.startsWith("look:")) {
@@ -898,7 +895,6 @@ async function onCallback(q) {
   const tooFast  = await overRL(uid, isToggle ? RL_TOGGLE_PER_MIN : RL_DEFAULT_PER_MIN);
   if (tooFast) { await answerCb("Слишком часто. Секунду…"); return; }
 
-  const chat = q.message.chat.id;
   let s = await getSess(uid);
 
   if (data === "continue")     { await continueFlow(uid, chat, s); await answerCb(); return; }
@@ -908,32 +904,18 @@ async function onCallback(q) {
     if (s.step !== "consent") { await answerCb(); return; }
     s.consent = "yes"; s.step = "name";
     await putSess(uid, s);
-    try {
-      await tg("editMessageReplyMarkup", {
-        chat_id: chat,
-        message_id: q.message.message_id,
-        reply_markup: { inline_keyboard: [] }
-      });
-    } catch {}
+    try { await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: { inline_keyboard: [] } }); } catch {}
     await tg("sendMessage", { chat_id: chat, text: "✅ Спасибо! Перейдём к анкете." });
     await sendName(chat, uid);
-    await answerCb();
-    return;
+    await answerCb(); return;
   }
 
   if (data === "consent_no") {
     if (s.step !== "consent") { await answerCb(); return; }
-    try {
-      await tg("editMessageReplyMarkup", {
-        chat_id: chat,
-        message_id: q.message.message_id,
-        reply_markup: { inline_keyboard: [] }
-      });
-    } catch {}
+    try { await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: { inline_keyboard: [] } }); } catch {}
     await tg("sendMessage", { chat_id: chat, text: "Ок. Если передумаешь — набери /start." });
     await delSess(uid);
-    await answerCb();
-    return;
+    await answerCb(); return;
   }
 
   if (data.startsWith("age:")) {
@@ -1033,7 +1015,7 @@ async function onCallback(q) {
       await answerCb(); return;
     }
 
-    // Лимит 5 отправок (кроме админа)
+    // лимит 5 отправок (кроме админа)
     if (!isAdmin(uid)) {
       const info = await getSubmitCount(uid);
       if (info.count >= 5) {
@@ -1047,6 +1029,7 @@ async function onCallback(q) {
     }
 
     await answerCb("Секунду, записываю…");
+    // перед финализацией — передадим prev/diff внутрь runLLM через finalize
     await finalize(chat, { id: uid, username: q.from.username }, s);
     return;
   }
