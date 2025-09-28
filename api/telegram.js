@@ -273,60 +273,81 @@ function consistencyScore(about, interests, stack) {
 
 
 async function runLLM(u, s, submission_count){
-  // ---------- подготовим сигналы (для модели это "подсказки", не финальный балл)
-  const name = (s.name || "").trim();
-  const about = (s.about || "").trim();
-  const interests = (s.interests || []).slice(0, 12);
-  const stack = (s.stack || []).slice(0, 12);
+  // ---------- базовые поля ----------
+  const name   = (s.name || "").trim();
+  const about  = (s.about || "").trim();
+  const ints   = (s.interests || []).slice(0, 12);
+  const stk    = (s.stack || []).slice(0, 12);
 
-  function scoreName(n){
-    const issues = [];
-    let sc = 85;
-    if (!n) { issues.push("не указано имя"); sc = 0; }
-    if (n && !/^[a-zA-Zа-яА-ЯёЁ][a-zA-Zа-яА-ЯёЁ .'\-]{1,79}$/.test(n)) { sc -= 25; issues.push("подозрительные символы/формат"); }
-    if (n && !/\s/.test(n)) { sc -= 10; issues.push("одно слово — нет фамилии"); }
-    if (n && /[0-9_]/.test(n)) { sc -= 15; issues.push("цифры/символы в имени"); }
-    if (n && /^(test|anon|user|qwe|asdf|тест)/i.test(n)) { sc -= 35; issues.push("похоже на псевдоним/тест"); }
-    return { score: Math.max(0, Math.min(95, sc)), issues };
+  // ---------- утилиты для флагов ----------
+  const RU_VOW = "аеёиоуыэюя";
+  const EN_VOW = "aeiouy";
+  const VOWELS_RE = /[аеёиоуыэюяaeiouy]/ig;
+  const LETTERS_RE = /[a-zа-яё]/ig;
+
+  function vowelRatio(str){
+    const letters = (str.match(LETTERS_RE)||[]).length;
+    const vowels  = (str.match(VOWELS_RE)||[]).length;
+    return letters ? vowels/letters : 0;
   }
-  function scoreAbout(t){
-    const issues=[], positives=[];
-    let sc = 50;
+  function looksRandomWord(w){
+    // «подозрительные» короткие бессмысленные токены латиницей или смешанные
+    if (!w) return false;
+    const lower = w.toLowerCase();
+    if (/^[a-z]{2,}$/i.test(w) && vowelRatio(w) < 0.28) return true;               // мало гласных
+    if (/[бвгджзйклмнпрстфхцчшщ]{4,}/i.test(lower)) return true;                  // длинные кластеры согласных
+    if (/([a-z])\1{2,}/i.test(lower) || /([а-я])\1{2,}/i.test(lower)) return true;// повторящиеся буквы
+    return false;
+  }
+  function collectNameFlags(n){
+    const flags = [];
+    if (!n) { flags.push("name_empty"); return flags; }
+    if (/[0-9_]/.test(n)) flags.push("name_has_digits_or_underscores");
+    if (!/[А-ЯЁA-Z]/.test(n.charAt(0))) flags.push("name_bad_capitalization");
+    const words = n.split(/\s+/).filter(Boolean);
+    if (words.length < 2) flags.push("name_one_word");
+    // язык/скрипт
+    const hasRu = /[А-Яа-яЁё]/.test(n);
+    const hasEn = /[A-Za-z]/.test(n);
+    if (!hasRu && !hasEn) flags.push("name_non_ru_en");
+    // «псевдоним»/рандомка
+    if (/^(test|anon|user|qwe|asdf|тест)/i.test(n)) flags.push("name_test_like");
+    if (vowelRatio(n) < 0.25) flags.push("name_low_vowel_ratio");
+    if (looksRandomWord(n.replace(/\s+/g,""))) flags.push("name_looks_random");
+    return flags;
+  }
+  function collectAboutFlags(t){
+    const flags = [];
     const len = t.length;
-    if (len >= 400) sc += 15; else if (len >= 200) sc += 10; else if (len >= 100) sc += 5; else { sc -= 10; issues.push("слишком короткое описание"); }
-    if (/[.!?]\s/.test(t)) sc += 5; else issues.push("мало предложений/пунктуации");
-    const letters = (t.match(/[a-zа-яё]/ig) || []).length;
-    const nonLetters = (t.match(/[^a-zа-яё0-9\s.,:;!?\-()]/ig) || []).length;
-    const letterRatio = letters / Math.max(1, t.length);
-    if (letterRatio < 0.65) { sc -= 10; issues.push("много посторонних символов/смайлов"); }
-    if (/(?:asdf|qwer|йцук|ячсм|лол|кек){2,}/i.test(t)) { sc -= 15; issues.push("похоже на случайный набор"); }
-    const links = (t.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0, 5);
-    if (links.length) { sc += 5; positives.push("есть ссылки на работы/профили"); }
-    return { score: Math.max(0, Math.min(95, sc)), issues, positives, links };
+    if (len < 30) flags.push("about_too_short");
+    if (vowelRatio(t) < 0.30) flags.push("about_low_vowel_ratio");
+    if (!/[.!?]/.test(t)) flags.push("about_no_sentences");
+    if (/(?:asdf|qwer|йцук|ячсм|лол|кек|dfg|sdf|zxc){2,}/i.test(t)) flags.push("about_gibberish_sequences");
+    if (/^[A-Za-z]{2,}\s[A-Za-z]{2,}$/.test(t) && len < 25) flags.push("about_two_random_words");
+    // очень мало букв, много прочих символов — шум
+    const letters = (t.match(LETTERS_RE)||[]).length;
+    if (letters && (letters/Math.max(1,len)) < 0.5) flags.push("about_low_letter_ratio");
+    return flags;
   }
-  function scoreConsistency(t, ints, stk){
+  function consistencySignals(t, ints, stk){
     const text = t.toLowerCase();
     const tokens = new Set(text.split(/[^a-zа-яё0-9+]+/i).filter(Boolean));
-    const norm = (s)=> String(s||"").toLowerCase().replace(/[^\w+]+/g," ").split(/\s+/).filter(Boolean);
-    const intsWords = ints.flatMap(norm);
-    const stkWords  = stk.flatMap(norm);
-    const hitInt = intsWords.filter(w => tokens.has(w)).length;
-    const hitStk = stkWords.filter(w => tokens.has(w)).length;
-    let sc = 50;
-    const issues=[], positives=[];
-    if (ints.length && hitInt===0) { sc -= 10; issues.push("в «о себе» нет подтверждения интересов"); }
-    if (stk.length  && hitStk===0) { sc -= 10; issues.push("в «о себе» нет подтверждения стека"); }
-    if (hitInt>0)  positives.push("есть пересечение с интересами");
-    if (hitStk>0)  positives.push("есть пересечение со стеком");
-    sc += Math.min(20, hitInt*2 + hitStk*2);
-    return { score: Math.max(0, Math.min(95, sc)), issues, positives };
+    const norm = s=> String(s||"").toLowerCase().replace(/[^\w+]+/g," ").split(/\s+/).filter(Boolean);
+    const iw = ints.flatMap(norm), sw = stk.flatMap(norm);
+    const hitInt = iw.filter(w=>tokens.has(w)).length;
+    const hitStk = sw.filter(w=>tokens.has(w)).length;
+    const flags = [];
+    if (ints.length && hitInt===0) flags.push("no_interests_in_about");
+    if (stk.length  && hitStk===0) flags.push("no_stack_in_about");
+    return { hitInt, hitStk, flags };
   }
-  const rName  = scoreName(name);
-  const rAbout = scoreAbout(about);
-  const rCons  = scoreConsistency(about, interests, stack);
-  const repeatsPenalty = Math.min(35, Math.max(0, (submission_count-1) * 7)); // −7 за каждую повторную попытку
 
-  // производные поля для подсказки модели
+  const nameFlags  = collectNameFlags(name);
+  const aboutFlags = collectAboutFlags(about);
+  const cons       = consistencySignals(about, ints, stk);
+  const repeats    = Math.max(0, submission_count - 1);
+
+  // work_style (из ответов)
   const workStyle = { builder:0.5, architect:0.2, researcher:0.1, operator:0.1, integrator:0.1 };
   switch (s.a1) {
     case "быстро прототипирую": workStyle.builder+=0.2; break;
@@ -342,82 +363,96 @@ async function runLLM(u, s, submission_count){
 
   const slotsCount = (s.time_days?.length || 0) + (s.time_slots?.length || 0);
   const timeCommitmentHeur = slotsCount>=6 ? "11–20ч" : slotsCount>=3 ? "6–10ч" : "≤5ч";
+  const linksInAbout = (about.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0, 5);
 
-  // --------- если нет ключа — локальная сводка (страховка)
+  // -------------- локальный фолбэк (если нет ключа) --------------
   function localFallback(){
-    const positives = [...(rAbout.positives||[]), ...(rCons.positives||[])];
-    const issues = [...rName.issues, ...rAbout.issues, ...rCons.issues];
-    if (repeatsPenalty>0) issues.push(`повторные заполнения: ${submission_count-1} (штраф ${repeatsPenalty})`);
-    const base = Math.round(rName.score*0.25 + rAbout.score*0.45 + rCons.score*0.30);
-    const finalScore = Math.max(0, Math.min(100, base - repeatsPenalty));
-    const bucket = finalScore>=80 ? "сильный кандидат" : finalScore>=65 ? "хороший кандидат" : finalScore>=50 ? "пограничный" : "слабый";
+    // базовая формула с сильным штрафом за «красные флаги» и повторы
+    let score = 80;
+    if (nameFlags.length)  score -= Math.min(40, nameFlags.length*8);
+    if (aboutFlags.length) score -= Math.min(40, aboutFlags.length*8);
+    if (cons.flags.length) score -= Math.min(30, cons.flags.length*10);
+    score -= Math.min(35, repeats*7);
+    score = Math.max(0, Math.min(100, score));
+
+    const bucket = score>=80 ? "сильный кандидат" : score>=65 ? "хороший кандидат" : score>=50 ? "пограничный" : "низкий";
+    const strengths = [];
+    if (!nameFlags.length) strengths.push("имя выглядит реалистично");
+    if (!aboutFlags.includes("about_too_short") && !aboutFlags.includes("about_gibberish_sequences")) strengths.push("описание «о себе» выглядит осмысленно");
+    if (cons.hitInt>0 || cons.hitStk>0) strengths.push("есть пересечение «о себе» с интересами/стеком");
+
+    const risks = [
+      ...nameFlags.map(f=>"name: "+f),
+      ...aboutFlags.map(f=>"about: "+f),
+      ...cons.flags.map(f=>"consistency: "+f)
+    ];
+    if (repeats>0) risks.push(`повторы заполнений: ${repeats}`);
+
     const summary =
-`Итоговый балл: ${finalScore}/100 (${bucket}).
+`Итоговый балл: ${score}/100 (${bucket}).
 
 Плюсы:
-${positives.length? positives.map(p=>"• "+p).join("\n"):"• явных плюсов нет"}
+${strengths.length? strengths.map(x=>"• "+x).join("\n"):"• явных плюсов нет"}
 
-Минусы/риски:
-${issues.length? issues.map(p=>"• "+p).join("\n"):"• критичных нет"}
+Риски/флаги:
+${risks.length? risks.map(x=>"• "+x).join("\n"):"• не обнаружено"}
 
 Рекомендации:
-• Развернуть «о себе» до 150–300+ символов, привести конкретные результаты и ссылки.
-• Согласовать «о себе» с отмеченными интересами и стеком (минимум 2–3 совпадения).
-• Проверить орфографию и пунктуацию.
-• Не отправлять множество повторных анкет без правок.`;
+• Укажи реальное имя (допусти кириллицу или корректную латиницу, имя и фамилию).
+• Разверни «о себе» (минимум 150–300 символов) с конкретными примерами и ссылками.
+• Свяжи «о себе» с отмеченными интересами и стеком (2–3 совпадения).
+• Сократи число повторных попыток (штрафуется).`;
+
     return {
-      fit_score: finalScore,
-      roles: interests.slice(0,6),
-      stack: stack.slice(0,8),
+      fit_score: score,
+      roles: ints.slice(0,6),
+      stack: stk.slice(0,8),
       work_style: workStyle,
       time_commitment: timeCommitmentHeur,
-      links: rAbout.links || [],
+      links: linksInAbout,
       summary
     };
   }
   if (!OPENAI_API_KEY) return localFallback();
 
-  // ---------- AI — главный оценщик
+  // -------------- OpenAI — главный оценщик --------------
   try {
     const SYSTEM =
 `Ты опытный технический рекрутер. Пиши по-русски.
-Задача: взвесить качество анкеты и выдать детальную сводку и рекомендации.
-Жёсткие правила:
-- Верни СТРОГО JSON.
-- "fit_score" — целое 0..100. 0 — мусор/противоречия/спам; 100 — безупречно.
-- Учитывай: реалистичность имени, орфография/пунктуация "о себе", структура текста, согласованность "о себе" с интересами/стеком, противоречия/хаотичность, повторные попытки (штраф).
-- В "summary" дай 3–6 абзацев: факторы, плюсы, риски, рекомендации и итоговую строку "Итоговый балл: X/100 (<категория>)".
-Схема JSON:
+Взвесь качество анкеты и верни СТРОГО JSON со структурой:
 {
-  "fit_score": 0..100,
-  "breakdown": { "name":0..95, "about":0..95, "spelling":0..95, "consistency":0..95, "repeats_penalty":0..35 },
+  "fit_score": 0..100,                       // снизить за red_flags и повторы
+  "red_flags": ["..."],                      // перечисли выявленные риски («нереалистичное имя», «о себе чушь/слишком коротко», «нет связки интересов/стека», «повторы» и т.п.)
   "strengths": ["..."],
-  "risks": ["..."],
-  "recommendations": ["..."],
-  "roles": ["..."],           // предполагаемые роли/направления
-  "stack": ["..."],           // предполагаемый стек
+  "risks": ["..."],                          // детальный разбор рисков (не дублируй red_flags дословно, а раскрой)
+  "recommendations": ["..."],                // конкретные шаги улучшения
+  "roles": ["..."],
+  "stack": ["..."],
   "work_style": {"builder":0..1,"architect":0..1,"researcher":0..1,"operator":0..1,"integrator":0..1},
   "time_commitment": "≤5ч|6–10ч|11–20ч|>20ч",
   "links": ["..."],
-  "summary": "..."
-}`;
+  "summary": "3–6 абзацев: факторы, плюсы, риски, рекомендации и финальная строка 'Итоговый балл: X/100 (<категория>)'. Без Markdown."
+}
+Жёстко наказывай за:
+- нереалистичное имя (латиница/кириллица без смысла, псевдоним, цифры/подчёркивания, одна «абракадабра»);
+- «о себе» бессмысленное/слишком короткое/без пунктуации/с «рандомными» токенами;
+- отсутствие связки «о себе» с интересами/стеком;
+- многократные повторы (submission_count>1).`;
 
     const USER = JSON.stringify({
       raw: {
-        name,
-        about,
-        interests,
-        stack,
+        name, about, interests: ints, stack: stk,
         a1: s.a1, a2: s.a2, a3: s.a3,
-        time_days: s.time_days || [],
-        time_slots: s.time_slots || [],
+        time_days: s.time_days || [], time_slots: s.time_slots || [],
         submission_count
       },
       signals: {
-        name: rName, about: { ...rAbout, links: undefined }, consistency: rCons,
-        repeats_penalty: repeatsPenalty,
-        heuristics: { workStyle, timeCommitmentHeur, links: rAbout.links || [] }
-      }
+        name_flags: nameFlags,
+        about_flags: aboutFlags,
+        consistency: cons,
+        repeats
+      },
+      heuristics: { workStyle, timeCommitmentHeur, linksInAbout }
     }, null, 2);
 
     const body = {
@@ -439,20 +474,24 @@ ${issues.length? issues.map(p=>"• "+p).join("\n"):"• критичных не
     const parsed = JSON.parse(r?.choices?.[0]?.message?.content || "null");
     if (!parsed || typeof parsed.fit_score !== "number" || !parsed.summary) return localFallback();
 
-    // санитизация + разумный дефолт, если каких-то полей нет
     return {
       fit_score: Math.max(0, Math.min(100, Math.round(parsed.fit_score))),
-      roles: Array.isArray(parsed.roles) && parsed.roles.length ? parsed.roles.slice(0,6) : interests.slice(0,6),
-      stack: Array.isArray(parsed.stack) && parsed.stack.length ? parsed.stack.slice(0,8) : stack.slice(0,8),
+      roles: Array.isArray(parsed.roles) && parsed.roles.length ? parsed.roles.slice(0,6) : ints.slice(0,6),
+      stack: Array.isArray(parsed.stack) && parsed.stack.length ? parsed.stack.slice(0,8) : stk.slice(0,8),
       work_style: typeof parsed.work_style==="object" ? parsed.work_style : workStyle,
       time_commitment: parsed.time_commitment || timeCommitmentHeur,
-      links: Array.isArray(parsed.links) ? parsed.links.slice(0,5) : (rAbout.links || []),
+      links: Array.isArray(parsed.links) ? parsed.links.slice(0,5) : linksInAbout,
       summary: String(parsed.summary).slice(0, 4000)
     };
   } catch {
     return localFallback();
   }
 }
+
+
+
+
+
 
 
 
