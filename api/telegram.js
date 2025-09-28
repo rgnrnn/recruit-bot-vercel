@@ -932,16 +932,15 @@ if (/^admin_videoinvite:(yes|no):/.test(data)) {
     if (score >= 20) {
       const text =
 `Видео-приглашение в проект https://drive.google.com/file/d/1EUypFONNL2HEY6JJsvYf4WrzQiZxxUPF/view?usp=sharing
-видео сгенерировано нейросетью
-выберите «Да» если ок`;
+видео сгенерировано нейросетью ;
       const invite_id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`;
       try { await writer("invites_log_add", { invite_id, telegram_id: String(targetId), text }); } catch {}
       await tg("sendMessage", {
         chat_id: targetId,
         text,
         reply_markup: { inline_keyboard: [[
-          { text:"Да", callback_data:`invite:yes:${invite_id}` },
-          { text:"Нет", callback_data:`invite:no:${invite_id}` }
+          { text:"🔵 да", callback_data:`invite:yes:${invite_id}` },
+          { text:"🔴 нет", callback_data:`invite:no:${invite_id}` }
         ]]}
       });
       await answerCb("Отправлено кандидату");
