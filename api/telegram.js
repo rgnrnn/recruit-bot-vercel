@@ -95,7 +95,16 @@ const RL_DEFAULT_PER_MIN = 30;
 const TIME_DAYS  = ["понедельник","вторник","среда","четверг"];
 const TIME_SLOTS = ["11:00–13:00","13:00–15:00","15:00–16:00","17:00–19:00"];
 
+
+
+
+
 /* ---------------- Redis ---------------- */
+
+
+
+
+
 function rUrl(path){ if(!REDIS_BASE||!REDIS_TOKEN) throw new Error("Redis env missing"); return new URL(REDIS_BASE+path); }
 async function rGET(path){ const r=await fetch(rUrl(path),{headers:{Authorization:`Bearer ${REDIS_TOKEN}`}}); return r.json(); }
 async function rCall(path,qs){ const u=rUrl(path); if(qs) for(const[k,v]of Object.entries(qs)) u.searchParams.set(k,String(v)); const r=await fetch(u,{headers:{Authorization:`Bearer ${REDIS_TOKEN}`}}); return r.json(); }
@@ -116,6 +125,30 @@ async function getFormsVersion() {
 async function formsResetAll() {
   try { await rIncrNoTTL("forms:version"); return true; } catch { return false; }
 }
+
+
+
+
+
+
+// --- helper: защита от повторной доставки апдейтов Telegram (idempotency)
+async function seenUpdate(id) {
+  try {
+    // ставим ключ на 3 минуты с NX: true — если уже был, вернётся не OK
+    const j = await rSet(`upd:${id}`, "1", { EX: 180, NX: true });
+    return j && ("result" in j) ? j.result === "OK" : true;
+  } catch {
+    // в случае проблем не блокируем обработку
+    return true;
+  }
+}
+
+
+
+
+
+
+
 
 // --- счётчик отправок (legacy учитываем ТОЛЬКО при версии 1)
 async function getSubmitCount(uid) {
