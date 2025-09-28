@@ -22,7 +22,7 @@ const DEBUG_TELEGRAM = /^1|true$/i.test(process.env.DEBUG_TELEGRAM || "");
 function dbg(label, payload) {
   try {
     const msg = `[DBG] ${label}: ` + (typeof payload === "string" ? payload : JSON.stringify(payload));
-    console.log(msg);               // <-- только консоль
+    console.log(msg);
   } catch {}
 }
 
@@ -117,7 +117,7 @@ async function formsResetAll() {
   try { await rIncrNoTTL("forms:version"); return true; } catch { return false; }
 }
 
-// NEW: чтение/миграция счётчика отправок (legacy учитывается ТОЛЬКО при версии 1)
+// --- чтение/миграция счётчика отправок (legacy учитывается ТОЛЬКО при версии 1)
 async function getSubmitCount(uid) {
   const ver = await getFormsVersion();
   const keyVer = `forms:v${ver}:${uid}:count`;
@@ -125,7 +125,7 @@ async function getSubmitCount(uid) {
   try { const j = await rGet(keyVer); cnt = Number(j?.result || 0) || 0; } catch {}
   if (ver === 1) {
     try {
-      const j2 = await rGet(`forms:${uid}:count`); // legacy
+      const j2 = await rGet(`forms:${uid}:count`); // legacy-ключ
       const legacy = Number(j2?.result || 0) || 0;
       if (legacy > cnt) { cnt = legacy; try { await rSet(keyVer, String(legacy)); } catch {} }
     } catch {}
@@ -264,10 +264,9 @@ async function sendTime(chat, sess){
   });
 }
 
-/* ---------------- LLM (локальная оценка + опционально OpenAI) ---------------- */
+/* ---------------- LLM (главный + фолбэк) ---------------- */
 function nameRealismScore(name) {
-  const n = (name||"").trim();
-  if (!n) return 0;
+  const n = (name||"").trim(); if (!n) return 0;
   if (n.length < 2 || n.length > 80) return 10;
   if (/^[a-zA-Zа-яА-ЯёЁ\-\'\s]+$/.test(n) === false) return 20;
   let score = 70;
@@ -276,8 +275,7 @@ function nameRealismScore(name) {
   return Math.min(score, 95);
 }
 function aboutQualityScore(about) {
-  const t = (about||"").trim();
-  if (!t) return 0;
+  const t = (about||"").trim(); if (!t) return 0;
   let score = 50;
   if (t.length > 80) score += 10;
   if (t.length > 200) score += 10;
@@ -296,59 +294,188 @@ function consistencyScore(about, interests, stack) {
   return Math.min(s, 95);
 }
 
-// Fallback for summary & score — чтобы summary всегда был
-function completeLLM(llmIn, s, submission_count){
-  const out = { ...(llmIn || {}) };
+async function runLLM(u, s, submission_count){
+  const name   = (s.name || "").trim();
+  const about  = (s.about || "").trim();
+  const ints   = (s.interests || []).slice(0, 12);
+  const stk    = (s.stack || []).slice(0, 12);
 
-  const name = (s.name || "").trim();
-  const about = (s.about || "").trim();
+  const VOWELS_RE = /[аеёиоуыэюяaeiouy]/ig;
+  const LETTERS_RE = /[a-zа-яё]/ig;
+  const vowelRatio = (str)=> {
+    const letters = (String(str).match(LETTERS_RE)||[]).length;
+    const vowels  = (String(str).match(VOWELS_RE)||[]).length;
+    return letters ? vowels/letters : 0;
+  };
+  const looksRandomWord = (w)=>{
+    if (!w) return false;
+    const lower = w.toLowerCase();
+    if (/^[a-z]{2,}$/i.test(w) && vowelRatio(w) < 0.28) return true;
+    if (/[бвгджзйклмнпрстфхцчшщ]{4,}/i.test(lower)) return true;
+    if (/([a-z])\1{2,}/i.test(lower) || /([а-я])\1{2,}/i.test(lower)) return true;
+    return false;
+  };
 
-  const n = nameRealismScore(name);
-  const a = aboutQualityScore(about);
-  const c = consistencyScore(about, s.interests || [], s.stack || []);
-  const repPenalty = Math.min(35, Math.max(0, (submission_count - 1) * 7));
-  const base = Math.round(n*0.25 + a*0.45 + c*0.30);
-  const score = Math.max(0, Math.min(100, base - repPenalty));
+  const nameFlags = (()=> {
+    const flags = [];
+    if (!name) { flags.push("name_empty"); return flags; }
+    if (/[0-9_]/.test(name)) flags.push("name_has_digits_or_underscores");
+    if (!/[А-ЯЁA-Z]/.test(name.charAt(0))) flags.push("name_bad_capitalization");
+    const words = name.split(/\s+/).filter(Boolean);
+    if (words.length < 2) flags.push("name_one_word");
+    const hasRu = /[А-Яа-яЁё]/.test(name);
+    const hasEn = /[A-Za-z]/.test(name);
+    if (!hasRu && !hasEn) flags.push("name_non_ru_en");
+    if (/^(test|anon|user|qwe|asdf|тест)/i.test(name)) flags.push("name_test_like");
+    if (vowelRatio(name) < 0.25) flags.push("name_low_vowel_ratio");
+    if (looksRandomWord(name.replace(/\s+/g,""))) flags.push("name_looks_random");
+    return flags;
+  })();
 
-  if (typeof out.fit_score !== "number") out.fit_score = score;
+  const aboutFlags = (()=> {
+    const t = about; const flags=[];
+    const len = t.length;
+    if (len < 30) flags.push("about_too_short");
+    if (vowelRatio(t) < 0.30) flags.push("about_low_vowel_ratio");
+    if (!/[.!?]/.test(t)) flags.push("about_no_sentences");
+    if (/(?:asdf|qwer|йцук|ячсм|лол|кек|dfg|sdf|zxc){2,}/i.test(t)) flags.push("about_gibberish_sequences");
+    if (/^[A-Za-z]{2,}\s[A-Za-z]{2,}$/.test(t) && len < 25) flags.push("about_two_random_words");
+    const letters = (t.match(LETTERS_RE)||[]).length;
+    if (letters && (letters/Math.max(1,len)) < 0.5) flags.push("about_low_letter_ratio");
+    return flags;
+  })();
 
-  if (!out.roles) out.roles = (s.interests || []).slice(0,6);
-  if (!out.stack) out.stack = (s.stack || []).slice(0,8);
-  if (!out.work_style) out.work_style = {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1};
-  if (!out.time_commitment) {
-    const slotsCount = (s.time_days?.length || 0) + (s.time_slots?.length || 0);
-    out.time_commitment = slotsCount>=6 ? "11–20ч" : slotsCount>=3 ? "6–10ч" : "≤5ч";
+  const consistencySignals = (()=> {
+    const text = about.toLowerCase();
+    const tokens = new Set(text.split(/[^a-zа-яё0-9+]+/i).filter(Boolean));
+    const norm = s=> String(s||"").toLowerCase().replace(/[^\w+]+/g," ").split(/\s+/).filter(Boolean);
+    const iw = ints.flatMap(norm), sw = stk.flatMap(norm);
+    const hitInt = iw.filter(w=>tokens.has(w)).length;
+    const hitStk = sw.filter(w=>tokens.has(w)).length;
+    const flags = [];
+    if (ints.length && hitInt===0) flags.push("no_interests_in_about");
+    if (stk.length  && hitStk===0) flags.push("no_stack_in_about");
+    return { hitInt, hitStk, flags };
+  })();
+
+  const repeats = Math.max(0, submission_count - 1);
+
+  // work_style (из ответов)
+  const workStyle = { builder:0.5, architect:0.2, researcher:0.1, operator:0.1, integrator:0.1 };
+  switch (s.a1) {
+    case "быстро прототипирую": workStyle.builder+=0.2; break;
+    case "проектирую основательно": workStyle.architect+=0.2; break;
+    case "исследую гипотезы": workStyle.researcher+=0.2; break;
+    case "синхронизирую людей": workStyle.integrator+=0.2; break;
   }
-  if (!out.links) out.links = [];
+  if (s.a2 === "MVP важнее идеала") workStyle.builder+=0.1;
+  if (s.a2 === "полирую до совершенства") workStyle.architect+=0.1;
+  if (s.a3 === "риск/скорость") workStyle.builder+=0.1;
+  if (s.a3 === "надёжность/предсказуемость") workStyle.operator+=0.1;
+  Object.keys(workStyle).forEach(k=> workStyle[k]= Number(Math.max(0, Math.min(1, workStyle[k])).toFixed(2)));
 
-  if (!out.summary || String(out.summary).trim()==="") {
-    const bucket = out.fit_score>=80?"сильный кандидат": out.fit_score>=65?"хороший кандидат": out.fit_score>=50?"пограничный":"низкий";
-    const pluses = [];
-    if (n>=70) pluses.push("имя выглядит реалистично");
-    if (a>=60) pluses.push("описание «о себе» структурно выглядит адекватно");
-    if (c>=60) pluses.push("есть согласованность «о себе» с интересами/стеком");
-    const minuses = [];
-    if (n<50) minuses.push("имя сомнительной достоверности");
-    if (a<50) minuses.push("«о себе» коротко/мало пунктуации/мало содержания");
-    if (c<50) minuses.push("слабая согласованность «о себе» с отмеченными интересами/стеком");
-    if (repPenalty>0) minuses.push(`повторных заполнений: ${submission_count-1} (штраф ${repPenalty})`);
+  const slotsCount = (s.time_days?.length || 0) + (s.time_slots?.length || 0);
+  const timeCommitmentHeur = slotsCount>=6 ? "11–20ч" : slotsCount>=3 ? "6–10ч" : "≤5ч";
+  const linksInAbout = (about.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0, 5);
 
-    out.summary =
-`Итоговый балл: ${out.fit_score}/100 (${bucket}).
+  // Локальный фолбэк
+  function localFallback(){
+    let score = 80;
+    if (nameFlags.length)  score -= Math.min(40, nameFlags.length*8);
+    if (aboutFlags.length) score -= Math.min(40, aboutFlags.length*8);
+    if (consistencySignals.flags.length) score -= Math.min(30, consistencySignals.flags.length*10);
+    score -= Math.min(35, repeats*7);
+    score = Math.max(0, Math.min(100, score));
+    const bucket = score>=80 ? "сильный кандидат" : score>=65 ? "хороший кандидат" : score>=50 ? "пограничный" : "низкий";
+
+    const strengths = [];
+    if (!nameFlags.length) strengths.push("имя выглядит реалистично");
+    if (!aboutFlags.includes("about_too_short") && !aboutFlags.includes("about_gibberish_sequences")) strengths.push("«о себе» выглядит осмысленно");
+    if (consistencySignals.hitInt>0 || consistencySignals.hitStk>0) strengths.push("есть пересечение «о себе» с интересами/стеком");
+
+    const risks = [
+      ...nameFlags.map(f=>"name: "+f),
+      ...aboutFlags.map(f=>"about: "+f),
+      ...consistencySignals.flags.map(f=>"consistency: "+f)
+    ];
+    if (repeats>0) risks.push(`повторы заполнений: ${repeats}`);
+
+    const summary =
+`Итоговый балл: ${score}/100 (${bucket}).
 
 Плюсы:
-${pluses.length?pluses.map(x=>"• "+x).join("\n"):"• явных плюсов нет"}
+${strengths.length? strengths.map(x=>"• "+x).join("\n"):"• явных плюсов нет"}
 
-Риски/минусы:
-${minuses.length?minuses.map(x=>"• "+x).join("\n"):"• критичных нет"}
+Риски/флаги:
+${risks.length? risks.map(x=>"• "+x).join("\n"):"• не обнаружено"}
 
 Рекомендации:
-• Укажи/уточни реальное имя (имя и фамилию).
-• Разверни «о себе» (150–300+ символов) с конкретными примерами и ссылками.
-• Свяжи «о себе» с отмеченными пунктами интересов/стека (2–3 совпадения).
-• Сократи число повторных попыток — это штрафуется.`;
+• Укажи реальное имя (кириллица/корректная латиница, имя и фамилия).
+• Разверни «о себе» (минимум 150–300 символов) с примерами и ссылками.
+• Свяжи «о себе» с отмеченными интересами и стеком (2–3 совпадения).
+• Сократи число повторных попыток (штрафуется).`;
+
+    return {
+      fit_score: score,
+      roles: ints.slice(0,6),
+      stack: stk.slice(0,8),
+      work_style: workStyle,
+      time_commitment: timeCommitmentHeur,
+      links: linksInAbout,
+      summary
+    };
   }
-  return out;
+  if (!OPENAI_API_KEY) return localFallback();
+
+  try {
+    const SYSTEM =
+`Ты опытный технический рекрутер. Пиши по-русски.
+Верни СТРОГО JSON:
+{"fit_score":0..100,"red_flags":["..."],"strengths":["..."],"risks":["..."],"recommendations":["..."],"roles":["..."],"stack":["..."],"work_style":{"builder":0..1,"architect":0..1,"researcher":0..1,"operator":0..1,"integrator":0..1},"time_commitment":"≤5ч|6–10ч|11–20ч|>20ч","links":["..."],"summary":"3–6 абзацев: факторы, плюсы, риски, рекомендации и финальная строка 'Итоговый балл: X/100 (<категория>)'."}
+Наказывай балл за: нереалистичное имя, бессмысленное/короткое «о себе», отсутствие связки «о себе» с интересами/стеком, повторы.`;
+
+    const USER = JSON.stringify({
+      raw: {
+        name, about, interests: ints, stack: stk,
+        a1: s.a1, a2: s.a2, a3: s.a3,
+        time_days: s.time_days || [], time_slots: s.time_slots || [],
+        submission_count
+      },
+      signals: { name_flags: nameFlags, about_flags: aboutFlags, consistency: consistencySignals, repeats },
+      heuristics: { workStyle, timeCommitmentHeur, linksInAbout }
+    }, null, 2);
+
+    const body = {
+      model: OPENAI_MODEL,
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: SYSTEM },
+        { role: "user",   content: USER   }
+      ]
+    };
+
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method:"POST",
+      headers:{ "content-type":"application/json","authorization":"Bearer "+OPENAI_API_KEY },
+      body: JSON.stringify(body)
+    }).then(x=>x.json()).catch(()=>null);
+
+    const parsed = JSON.parse(r?.choices?.[0]?.message?.content || "null");
+    if (!parsed || typeof parsed.fit_score !== "number" || !parsed.summary) return localFallback();
+
+    return {
+      fit_score: Math.max(0, Math.min(100, Math.round(parsed.fit_score))),
+      roles: Array.isArray(parsed.roles) && parsed.roles.length ? parsed.roles.slice(0,6) : ints.slice(0,6),
+      stack: Array.isArray(parsed.stack) && parsed.stack.length ? parsed.stack.slice(0,8) : stk.slice(0,8),
+      work_style: typeof parsed.work_style==="object" ? parsed.work_style : workStyle,
+      time_commitment: parsed.time_commitment || timeCommitmentHeur,
+      links: Array.isArray(parsed.links) ? parsed.links.slice(0,5) : linksInAbout,
+      summary: String(parsed.summary).slice(0,4000)
+    };
+  } catch {
+    return localFallback();
+  }
 }
 
 /* ---------------- Запись строки в Sheets ---------------- */
@@ -363,8 +490,8 @@ async function appendSheets(row){
 
 // Уведомление администратора о новой анкете
 function chunkText(str, max = 3500) {
-  const out = [];
-  for (let i = 0; i < String(str).length; i += max) out.push(String(str).slice(i, i + max));
+  const out = []; const s = String(str);
+  for (let i = 0; i < s.length; i += max) out.push(s.slice(i, i + max));
   return out;
 }
 async function notifyAdminOnFinish(user, s, llm, whenISO) {
@@ -394,21 +521,15 @@ ${llm.summary || "summary не сгенерирован"}`;
 /* ---------------- Финализация анкеты ---------------- */
 async function finalize(chat, user, s) {
   try {
-    // Версия счётчиков (для глобального сброса лимитов)
     const ver = await getFormsVersion();
     const cntKey = `forms:v${ver}:${user.id}:count`;
 
-    // 1) Сколько раз уже заполнял (persist без TTL)
     let cnt = 0;
     try { const j = await rGet(cntKey); cnt = Number(j?.result || 0) || 0; } catch {}
     const submission_count = cnt + 1;
 
-    // 2) Оценка/summary от LLM (или фолбэк)
-    let llm = await runLLM(user, s, submission_count) || {};
-    // ensure LLM output
-    llm = completeLLM(llm, s, submission_count);
+    const llm = await runLLM(user, s, submission_count) || {};
 
-    // 3) Готовим строку для Google Sheets (25 колонок; source — 6-я)
     const nowISO = new Date().toISOString();
     const row = [
       nowISO,
@@ -439,16 +560,11 @@ async function finalize(chat, user, s) {
       llm.summary || "Сохранено."
     ];
 
-    // 4) Пишем строку
     await appendSheets(row);
-
-    // 4.1) Уведомляем администратора краткой сводкой (без падения при ошибке)
     try { await notifyAdminOnFinish(user, s, llm, nowISO); } catch {}
 
-    // 5) Инкрементируем счётчик попыток
     try { await rIncrNoTTL(cntKey); } catch {}
 
-    // 6) Сообщаем пользователю
     const days  = (s.time_days||[]).join(", ") || "—";
     const slots = (s.time_slots||[]).join(", ") || "—";
     await tg("sendMessage", {
@@ -458,7 +574,6 @@ async function finalize(chat, user, s) {
 Слоты: ${slots}`
     });
 
-    // 7) Закрываем сессию
     s.step = "done";
     await rSet(`sess:${user.id}`, JSON.stringify(s), { EX: 600 });
     await rDel(`sess:${user.id}`);
@@ -500,7 +615,7 @@ function makeNew(){ return {
   llm:{}
 };}
 async function resetFlow(uid,chat){
-  const prev = await getSess(uid);         // сохраняем предыдущий source
+  const prev = await getSess(uid);
   const s = makeNew();
   s.source = prev.source || "";
   await rSet(`sess:${uid}`,JSON.stringify(s),{EX:21600});
@@ -540,8 +655,7 @@ function fmtVal(v){
   if (typeof v === "string") {
     const t = v.trim();
     if ((t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]"))) {
-      try {
-        const j = JSON.parse(t);
+      try { const j = JSON.parse(t);
         if (Array.isArray(j)) return j.join(", ");
         return Object.entries(j).map(([k,val])=>`${k}: ${val}`).join(", ");
       } catch {}
@@ -650,7 +764,6 @@ async function onMessage(m){
     const decoded = safeDecode(rawPayload);
     const hasSecret = (!!START_SECRET && (rawPayload.includes(START_SECRET) || decoded.includes(START_SECRET)));
 
-    // поддержка старых форматов: src:, src=, src_  — после "__"
     const grabSrc = (s) => {
       if (!s) return "";
       const m = s.match(/(?:^|__)(?:src[:=_]|s[:=_])([A-Za-z0-9._-]{1,64})/i);
@@ -673,7 +786,6 @@ async function onMessage(m){
       return;
     }
 
-    // при новом старте НЕ теряем source — наследуем из текущей сессии
     const s2 = makeNew();
     s2.source = parsedSrc || s.source || "";
     await putSess(uid,s2);
@@ -748,7 +860,7 @@ async function onCallback(q) {
 
   if (data.startsWith("look:")) {
     if (!isAdmin(uid)) { await answerCb(); return; }
-    const parts = data.split(":"); // look:yes:idx | look:no:idx | look:stop
+    const parts = data.split(":");
     const action = parts[1];
     const idx = Number(parts[2] || "0");
     if (action === "stop") { await answerCb("Остановлено"); return; }
@@ -889,4 +1001,53 @@ async function onCallback(q) {
 
   // A1/A2/A3
   if (data.startsWith("a1:")) { if (s.step !== "a1") { await answerCb(); return; } s.a1 = data.split(":")[1]; s.step = "a2"; await putSess(uid, s); await sendA2(chat); await answerCb(); return; }
-  if (data.startsWith("a2:")) { if (s.step !== "a2") { await answerCb(); return; } s.a2 = data.split(":")[1]; s.step =
+  if (data.startsWith("a2:")) { if (s.step !== "a2") { await answerCb(); return; } s.a2 = data.split(":")[1]; s.step = "a3"; await putSess(uid, s); await sendA3(chat); await answerCb(); return; }
+  if (data.startsWith("a3:")) {
+    if (s.step !== "a3") { await answerCb(); return; }
+    s.a3 = data.split(":")[1]; s.step = "about"; await putSess(uid, s); await sendAbout(chat); await answerCb(); return;
+  }
+
+  // Q7: дни/слоты и ГОТОВО
+  if (data.startsWith("q7d:")) {
+    if (s.step !== "time") { await answerCb(); return; }
+    const day = data.slice(4);
+    const i = s.time_days.indexOf(day);
+    if (i>=0) s.time_days.splice(i,1); else s.time_days.push(day);
+    await putSess(uid, s);
+    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbTimeDaysSlots(s) });
+    await answerCb(); return;
+  }
+  if (data.startsWith("q7s:")) {
+    if (s.step !== "time") { await answerCb(); return; }
+    const slot = data.slice(4);
+    const i = s.time_slots.indexOf(slot);
+    if (i>=0) s.time_slots.splice(i,1); else s.time_slots.push(slot);
+    await putSess(uid, s);
+    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbTimeDaysSlots(s) });
+    await answerCb(); return;
+  }
+  if (data === "q7:done") {
+    if (s.step !== "time") { await answerCb(); return; }
+    if (!(s.time_days?.length) || !(s.time_slots?.length)) {
+      await tg("sendMessage", { chat_id: chat, text: "отметь хотя бы один день и один временной слот" });
+      await answerCb(); return;
+    }
+
+    // Лимит 5 отправок (кроме админа)
+    if (!isAdmin(uid)) {
+      const info = await getSubmitCount(uid);
+      if (info.count >= 5) {
+        await answerCb();
+        await tg("sendMessage", {
+          chat_id: chat,
+          text: "⛔ Лимит на количество отправок анкеты исчерпан (5/5). Если есть важные дополнения — свяжись с админом."
+        });
+        return;
+      }
+    }
+
+    await answerCb("Секунду, записываю…");
+    await finalize(chat, { id: uid, username: q.from.username }, s);
+    return;
+  }
+}
