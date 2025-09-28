@@ -357,20 +357,68 @@ function consistencyScore(about, interests, stack) {
 
 
 
-async function runLLM(u, s, submission_count, prevSnap=null, diffs=null){
+async function runLLM(u, s, submission_count, prevSnap = null, diffs = null){
   const name   = (s.name || "").trim();
   const about  = (s.about || "").trim();
   const interests = (s.interests || []).slice(0,12);
   const stack     = (s.stack || []).slice(0,12);
 
-  // локальные сигналы
+  // ---------- локальные эвристики ----------
+  // вспомогательные метрики для детекции "мусора"
+  const LETTERS_RE = /[a-zа-яё]/ig;
+  const VOWELS_RE  = /[аеёиоуыэюяaeiouy]/ig;
+  const lettersCount = (t)=> (String(t).match(LETTERS_RE)||[]).length;
+  const vowelRatio   = (t)=> {
+    const L = lettersCount(t);
+    const V = (String(t).match(VOWELS_RE)||[]).length;
+    return L ? V/L : 0;
+  };
+  const hasBadRepeats = (t)=> /(asdf|qwer|йцук|ячсм|zxc|123|000|xxx){2,}/i.test(String(t));
+  const longConsCluster = (t)=> /[бвгджзйклмнпрстфхцчшщ]{4,}/i.test(String(t)) || /[bcdfghjklmnpqrstvwxz]{5,}/i.test(String(t));
+
+  // 1) имя — «мусор»?
+  const digitsOrUnderscore = /[\d_]/.test(name);
+  const tooFewVowels       = vowelRatio(name) < 0.25;
+  const badStart           = name && !/^[A-Za-zА-ЯЁ]/.test(name);
+  const oneTokenShort      = name.split(/\s+/).filter(Boolean).length < 1 || name.length < 2;
+  const randomishName      = longConsCluster(name);
+  const badName = !!(digitsOrUnderscore || tooFewVowels || badStart || oneTokenShort || randomishName);
+
+  // 2) "о себе" — «мусор»?
+  const letters = lettersCount(about);
+  const lowLetterRatio = letters && (letters / Math.max(about.length,1)) < 0.45;
+  const noSentences    = !/[.!?]/.test(about);
+  const veryShort      = about.length < 40;
+  const veryLowVowels  = vowelRatio(about) < 0.30;
+  const gibberishAbout = !!(hasBadRepeats(about) || lowLetterRatio || veryLowVowels || (veryShort && noSentences));
+
+  // 3) хаотические изменения интересов между отправками?
+  // считаем только если это НЕ первая анкета и есть prevSnap (т.е. сравнение строго в рамках ОДНОГО user_id)
+  let chaoticInterests = false;
+  if (submission_count > 1 && prevSnap && Array.isArray(prevSnap.interests)) {
+    const added   = (diffs && diffs.interests && diffs.interests.added)   ? diffs.interests.added.length   : 0;
+    const removed = (diffs && diffs.interests && diffs.interests.removed) ? diffs.interests.removed.length : 0;
+    const changed = added + removed;
+    const base    = new Set([...(prevSnap.interests||[]), ...(s.interests||[])]).size || 1;
+    const ratio   = changed / base;
+    // считаем «хаосом»: ≥4 правки или ≥60% состава изменилось
+    chaoticInterests = (changed >= 4) || (ratio >= 0.6);
+  }
+
+  // базовые локальные баллы
   const nScore = nameRealismScore(name);
   const aScore = aboutQualityScore(about);
   const cScore = consistencyScore(about, interests, stack);
   const repPenalty = Math.max(0, (submission_count-1)*7);
   let localScore = Math.max(0, Math.min(100, Math.round(nScore*0.25 + aScore*0.45 + cScore*0.30) - repPenalty));
 
-  // фолбэк (без рекомендаций)
+  // применяем жёсткие пороги (правила-стражи)
+  const guardNotes = [];
+  if (badName)         { localScore = Math.min(localScore, 49); guardNotes.push("имя выглядит нерелевантым/случайным ⇒ <50"); }
+  if (gibberishAbout)  { localScore = Math.min(localScore, 19); guardNotes.push("«о себе» похоже на набор символов ⇒ <20"); }
+  if (chaoticInterests){ localScore = Math.min(localScore, 49); guardNotes.push("хаотичные изменения интересов при повторе ⇒ <50"); }
+
+  // локальный summary (без рекомендаций)
   const localSummary =
 `Итоговый балл: ${localScore}/100 (${localScore>=80?"сильный кандидат":localScore>=65?"хороший кандидат":localScore>=50?"пограничный":"низкий"}).
 
@@ -378,8 +426,11 @@ async function runLLM(u, s, submission_count, prevSnap=null, diffs=null){
 • Имя — ${nScore>=70?"реалистично":"сомнительно"} (≈${nScore}/95).
 • «О себе» — ${aScore>=60?"содержательно":"скудно/без структуры"} (≈${aScore}/95).
 • Согласованность — ${cScore>=60?"есть пересечения":"слабая"} (≈${cScore}/95).
-• Повторные попытки: ${submission_count-1} (штраф ${repPenalty}).`;
+• Повторные попытки: ${submission_count-1} (штраф ${repPenalty}).${
+  guardNotes.length ? "\n\nПрименены правила: " + guardNotes.join("; ") : ""
+}`;
 
+  // Если нет ключа — возвращаем локальные оценки
   if (!OPENAI_API_KEY) {
     return {
       fit_score: localScore,
@@ -393,22 +444,31 @@ async function runLLM(u, s, submission_count, prevSnap=null, diffs=null){
     };
   }
 
+  // ---------- OpenAI ----------
   try {
     const SYSTEM =
 `Ты технический рекрутер. Пиши по-русски. Верни СТРОГО JSON:
-{"fit_score":0..100,"strengths":["..."],"risks":["..."],"diff_conclusion":"краткий вывод о прогрессе/регрессе","summary":"3–6 абзацев: факторы + динамика (что изменилось по сравнению с прошлой анкетой). Без блока рекомендаций."}
-Балл повышай при положительной динамике (больше релевантных интересов/стека, лучше «о себе», выше согласованность), понижай при регрессе/хаосе/фейковом имени/повторах.`;
+{"fit_score":0..100,"strengths":["..."],"risks":["..."],"diff_conclusion":"краткий вывод о прогрессе/регрессе","summary":"3–6 абзацев: факторы + динамика. Без рекомендаций."}
+Жёсткие правила:
+- Нереалистичное/случайное имя: общий балл < 50.
+- «О себе» похоже на набор символов: общий балл < 20.
+- При повторном заполнении «хаос» в интересах (существенная доля добавлений/удалений): общий балл < 50.
+Сравнивай только с предыдущими анкетами ЭТОГО ЖЕ пользователя (same user_id). Если prev отсутствует — динамику не учитывай.`;
 
     const USER = JSON.stringify({
+      user_id: String(u.id),
       now: {
         name, about, interests, stack,
         a1: s.a1, a2: s.a2, a3: s.a3,
         time_days: s.time_days || [], time_slots: s.time_slots || [],
         submission_count
       },
-      prev: prevSnap || null,
-      diffs: diffs || null,
-      local_signals: { nScore, aScore, cScore, repPenalty, localScore }
+      prev: prevSnap || null,           // null на первом заполнении — сравнения нет
+      diffs: diffs || null,             // вычислены ТОЛЬКО для этого user_id
+      local_flags: {
+        badName, gibberishAbout, chaoticInterests
+      },
+      local_scores: { nScore, aScore, cScore, repPenalty, base: localScore }
     }, null, 2);
 
     const body = {
@@ -419,7 +479,8 @@ async function runLLM(u, s, submission_count, prevSnap=null, diffs=null){
     };
 
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
-      method:"POST", headers:{ "content-type":"application/json","authorization":"Bearer "+OPENAI_API_KEY },
+      method:"POST",
+      headers:{ "content-type":"application/json","authorization":"Bearer "+OPENAI_API_KEY },
       body: JSON.stringify(body)
     }).then(x=>x.json()).catch(()=>null);
 
@@ -436,20 +497,32 @@ async function runLLM(u, s, submission_count, prevSnap=null, diffs=null){
         ai_used: true
       };
     }
+
+    // балл от AI + жёсткие пороги
+    let score = Math.max(0, Math.min(100, Math.round(parsed.fit_score)));
+    const guardNotesAI = [];
+    if (badName)         { score = Math.min(score, 49); guardNotesAI.push("имя ⇒ <50"); }
+    if (gibberishAbout)  { score = Math.min(score, 19); guardNotesAI.push("о себе ⇒ <20"); }
+    if (chaoticInterests){ score = Math.min(score, 49); guardNotesAI.push("хаос интересов ⇒ <50"); }
+
+    const summary = String(parsed.summary).slice(0,4000) +
+      (guardNotesAI.length ? `\n\nПрименены правила: ${guardNotesAI.join("; ")}` : "");
+
     return {
-      fit_score: Math.max(0, Math.min(100, Math.round(parsed.fit_score))),
+      fit_score: score,
       roles: interests.slice(0,6),
       stack: stack.slice(0,8),
       work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
       time_commitment: ((s.time_days?.length||0)+(s.time_slots?.length||0))>=6 ? "11–20ч" : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч",
       links: (about.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0,5),
-      summary: String(parsed.summary).slice(0,4000),
+      summary,
       ai_used: true,
       strengths: parsed.strengths || [],
       risks: parsed.risks || [],
       diff_conclusion: parsed.diff_conclusion || ""
     };
   } catch {
+    // при сбое AI остаёмся на локальном варианте
     return {
       fit_score: localScore,
       roles: interests.slice(0,6),
@@ -462,6 +535,7 @@ async function runLLM(u, s, submission_count, prevSnap=null, diffs=null){
     };
   }
 }
+
 
 
 
