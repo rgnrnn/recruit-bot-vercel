@@ -779,10 +779,13 @@ async function onMessage(m){
       try {
         const j = await rGet(`sess:${uid}`);
         const raw = j?.result || "";
-        await tg("sendMessage", { chat_id: chat, text: raw ? `sess:${uid}\n\`\`\`\n${raw}\n\`\`\`` : "пуcто", parse_mode: "Markdown" });
-      } catch(e) { await tg("sendMessage", { chat_id: chat, text: `err: ${e?.message || e}` }); }
+        await tg("sendMessage", { chat_id: chat, text: raw ? `sess:${uid}\n${raw}` : "пуcто" });
+      } catch(e) {
+        await tg("sendMessage", { chat_id: chat, text: `err: ${e?.message || e}` });
+      }
       return;
     }
+
 
     // глобальный cброc лимитов по команде админа
     if (isAdmin(uid) && text === "/forms_reset_all") {
@@ -930,16 +933,16 @@ if (/^admin_videoinvite:(yes|no):/.test(data)) {
 
   if (yesNo === "yes") {
     if (score >= 20) {
-      const text =
-`Видео-приглашение в проект https://drive.google.com/file/d/1EUypFONNL2HEY6JJsvYf4WrzQiZxxUPF/view?usp=sharing
-видео сгенерировано нейросетью ;
+      const text = `Видео-приглашение в проект https://drive.google.com/file/d/1EUypFONNL2HEY6JJsvYf4WrzQiZxxUPF/view?usp=sharing
+видео сгенерировано нейросетью
+выберите «Да» если ок`;
       const invite_id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`;
       try { await writer("invites_log_add", { invite_id, telegram_id: String(targetId), text }); } catch {}
       await tg("sendMessage", {
         chat_id: targetId,
         text,
         reply_markup: { inline_keyboard: [[
-          { text:"🔵 да", callback_data:`invite:yes:${invite_id}` },
+          { text:"🔵 да",  callback_data:`invite:yes:${invite_id}` },
           { text:"🔴 нет", callback_data:`invite:no:${invite_id}` }
         ]]}
       });
@@ -954,6 +957,7 @@ if (/^admin_videoinvite:(yes|no):/.test(data)) {
   }
   return;
 }
+
 
 
 
