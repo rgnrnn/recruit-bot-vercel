@@ -854,16 +854,38 @@ async function onCallback(q) {
     if (s.step !== "consent") { await answerCb(); return; }
     s.consent = "yes"; s.step = "name";
     await putSess(uid, s);
-    try { await tg("editMessageText", { chat_id: chat, message_id: q.message.message_id, text: "✅ спасибо за согласие на связь", parse_mode: "HTML" }); } catch {}
+    // 1) снимаем только клавиатуру у приветственного сообщения
+    try {
+      await tg("editMessageReplyMarkup", {
+        chat_id: chat,
+        message_id: q.message.message_id,
+        reply_markup: { inline_keyboard: [] }
+      });
+    } catch {}
+    // 2) отправляем отдельное подтверждение
+    await tg("sendMessage", { chat_id: chat, text: "✅ Спасибо! Перейдём к анкете." });
     await sendName(chat, uid);
-    await answerCb(); return;
+    await answerCb();
+    return;
   }
-  if (data === "consent_no") {
-    if (s.step !== "consent") { await answerCb(); return; }
-    try { await tg("editMessageText", { chat_id: chat, message_id: q.message.message_id, text: "ок. если передумаешь — /start" }); } catch {}
-    await delSess(uid);
-    await answerCb(); return;
-  }
+
+if (data === "consent_no") {
+  if (s.step !== "consent") { await answerCb(); return; }
+  // 1) снимаем клавиатуру у приветственного сообщения
+  try {
+    await tg("editMessageReplyMarkup", {
+      chat_id: chat,
+      message_id: q.message.message_id,
+      reply_markup: { inline_keyboard: [] }
+    });
+  } catch {}
+  // 2) отдельным сообщением — отказ
+  await tg("sendMessage", { chat_id: chat, text: "Ок. Если передумаешь — набери /start." });
+  await delSess(uid);
+  await answerCb();
+  return;
+}
+
 
   if (data.startsWith("age:")) {
     if (s.step !== "age") { await answerCb(); return; }
