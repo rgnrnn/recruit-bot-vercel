@@ -23,7 +23,6 @@ function dbg(label, payload) {
   try {
     const msg = `[DBG] ${label}: ` + (typeof payload === "string" ? payload : JSON.stringify(payload));
     console.log(msg);               // <-- только консоль
-    // никаких sendMessage админу
   } catch {}
 }
 
@@ -297,11 +296,59 @@ function consistencyScore(about, interests, stack) {
   return Math.min(s, 95);
 }
 
-async function runLLM(u, s, submission_count){
-  // ... (ваша функция runLLM без изменений — пропущено для краткости здесь, но в вашем файле она остаётся той, что была)
-  // Вставьте здесь ту версию runLLM, что у вас уже есть сейчас.
-  // Я не менял runLLM в этой правке.
-  return await (async ()=>{ /* placeholder to satisfy linter if needed */ })();
+// Fallback for summary & score — чтобы summary всегда был
+function completeLLM(llmIn, s, submission_count){
+  const out = { ...(llmIn || {}) };
+
+  const name = (s.name || "").trim();
+  const about = (s.about || "").trim();
+
+  const n = nameRealismScore(name);
+  const a = aboutQualityScore(about);
+  const c = consistencyScore(about, s.interests || [], s.stack || []);
+  const repPenalty = Math.min(35, Math.max(0, (submission_count - 1) * 7));
+  const base = Math.round(n*0.25 + a*0.45 + c*0.30);
+  const score = Math.max(0, Math.min(100, base - repPenalty));
+
+  if (typeof out.fit_score !== "number") out.fit_score = score;
+
+  if (!out.roles) out.roles = (s.interests || []).slice(0,6);
+  if (!out.stack) out.stack = (s.stack || []).slice(0,8);
+  if (!out.work_style) out.work_style = {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1};
+  if (!out.time_commitment) {
+    const slotsCount = (s.time_days?.length || 0) + (s.time_slots?.length || 0);
+    out.time_commitment = slotsCount>=6 ? "11–20ч" : slotsCount>=3 ? "6–10ч" : "≤5ч";
+  }
+  if (!out.links) out.links = [];
+
+  if (!out.summary || String(out.summary).trim()==="") {
+    const bucket = out.fit_score>=80?"сильный кандидат": out.fit_score>=65?"хороший кандидат": out.fit_score>=50?"пограничный":"низкий";
+    const pluses = [];
+    if (n>=70) pluses.push("имя выглядит реалистично");
+    if (a>=60) pluses.push("описание «о себе» структурно выглядит адекватно");
+    if (c>=60) pluses.push("есть согласованность «о себе» с интересами/стеком");
+    const minuses = [];
+    if (n<50) minuses.push("имя сомнительной достоверности");
+    if (a<50) minuses.push("«о себе» коротко/мало пунктуации/мало содержания");
+    if (c<50) minuses.push("слабая согласованность «о себе» с отмеченными интересами/стеком");
+    if (repPenalty>0) minuses.push(`повторных заполнений: ${submission_count-1} (штраф ${repPenalty})`);
+
+    out.summary =
+`Итоговый балл: ${out.fit_score}/100 (${bucket}).
+
+Плюсы:
+${pluses.length?pluses.map(x=>"• "+x).join("\n"):"• явных плюсов нет"}
+
+Риски/минусы:
+${minuses.length?minuses.map(x=>"• "+x).join("\n"):"• критичных нет"}
+
+Рекомендации:
+• Укажи/уточни реальное имя (имя и фамилию).
+• Разверни «о себе» (150–300+ символов) с конкретными примерами и ссылками.
+• Свяжи «о себе» с отмеченными пунктами интересов/стека (2–3 совпадения).
+• Сократи число повторных попыток — это штрафуется.`;
+  }
+  return out;
 }
 
 /* ---------------- Запись строки в Sheets ---------------- */
@@ -317,7 +364,7 @@ async function appendSheets(row){
 // Уведомление администратора о новой анкете
 function chunkText(str, max = 3500) {
   const out = [];
-  for (let i = 0; i < String(str).length; i += max) out.push(String(str).slice(0, i + max));
+  for (let i = 0; i < String(str).length; i += max) out.push(String(str).slice(i, i + max));
   return out;
 }
 async function notifyAdminOnFinish(user, s, llm, whenISO) {
@@ -357,7 +404,9 @@ async function finalize(chat, user, s) {
     const submission_count = cnt + 1;
 
     // 2) Оценка/summary от LLM (или фолбэк)
-    const llm = await runLLM(user, s, submission_count) || {};
+    let llm = await runLLM(user, s, submission_count) || {};
+    // ensure LLM output
+    llm = completeLLM(llm, s, submission_count);
 
     // 3) Готовим строку для Google Sheets (25 колонок; source — 6-я)
     const nowISO = new Date().toISOString();
@@ -568,7 +617,7 @@ async function onMessage(m){
       return;
     }
 
-    // NEW: глобальный сброс лимитов по команде админа
+    // глобальный сброс лимитов по команде админа
     if (isAdmin(uid) && text === "/forms_reset_all") {
       const ok = await formsResetAll();
       await tg("sendMessage", { chat_id: chat, text: ok ? "✅ Лимиты анкет сброшены для всех пользователей." : "⚠️ Не удалось сбросить лимиты." });
@@ -747,7 +796,6 @@ async function onCallback(q) {
     if (s.step !== "consent") { await answerCb(); return; }
     s.consent = "yes"; s.step = "name";
     await putSess(uid, s);
-    // 1) снимаем только клавиатуру у приветственного сообщения
     try {
       await tg("editMessageReplyMarkup", {
         chat_id: chat,
@@ -755,7 +803,6 @@ async function onCallback(q) {
         reply_markup: { inline_keyboard: [] }
       });
     } catch {}
-    // 2) отправляем отдельное подтверждение
     await tg("sendMessage", { chat_id: chat, text: "✅ Спасибо! Перейдём к анкете." });
     await sendName(chat, uid);
     await answerCb();
@@ -764,7 +811,6 @@ async function onCallback(q) {
 
   if (data === "consent_no") {
     if (s.step !== "consent") { await answerCb(); return; }
-    // 1) снимаем клавиатуру у приветственного сообщения
     try {
       await tg("editMessageReplyMarkup", {
         chat_id: chat,
@@ -772,7 +818,6 @@ async function onCallback(q) {
         reply_markup: { inline_keyboard: [] }
       });
     } catch {}
-    // 2) отдельным сообщением — отказ
     await tg("sendMessage", { chat_id: chat, text: "Ок. Если передумаешь — набери /start." });
     await delSess(uid);
     await answerCb();
@@ -844,53 +889,4 @@ async function onCallback(q) {
 
   // A1/A2/A3
   if (data.startsWith("a1:")) { if (s.step !== "a1") { await answerCb(); return; } s.a1 = data.split(":")[1]; s.step = "a2"; await putSess(uid, s); await sendA2(chat); await answerCb(); return; }
-  if (data.startsWith("a2:")) { if (s.step !== "a2") { await answerCb(); return; } s.a2 = data.split(":")[1]; s.step = "a3"; await putSess(uid, s); await sendA3(chat); await answerCb(); return; }
-  if (data.startsWith("a3:")) {
-    if (s.step !== "a3") { await answerCb(); return; }
-    s.a3 = data.split(":")[1]; s.step = "about"; await putSess(uid, s); await sendAbout(chat); await answerCb(); return;
-  }
-
-  // Q7: дни/слоты и ГОТОВО
-  if (data.startsWith("q7d:")) {
-    if (s.step !== "time") { await answerCb(); return; }
-    const day = data.slice(4);
-    const i = s.time_days.indexOf(day);
-    if (i>=0) s.time_days.splice(i,1); else s.time_days.push(day);
-    await putSess(uid, s);
-    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbTimeDaysSlots(s) });
-    await answerCb(); return;
-  }
-  if (data.startsWith("q7s:")) {
-    if (s.step !== "time") { await answerCb(); return; }
-    const slot = data.slice(4);
-    const i = s.time_slots.indexOf(slot);
-    if (i>=0) s.time_slots.splice(i,1); else s.time_slots.push(slot);
-    await putSess(uid, s);
-    await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbTimeDaysSlots(s) });
-    await answerCb(); return;
-  }
-  if (data === "q7:done") {
-    if (s.step !== "time") { await answerCb(); return; }
-    if (!(s.time_days?.length) || !(s.time_slots?.length)) {
-      await tg("sendMessage", { chat_id: chat, text: "отметь хотя бы один день и один временной слот" });
-      await answerCb(); return;
-    }
-
-    // NEW: лимит на 5 отправок (кроме админа) с игнором legacy после reset
-    if (!isAdmin(uid)) {
-      const info = await getSubmitCount(uid);
-      if (info.count >= 5) {
-        await answerCb();
-        await tg("sendMessage", {
-          chat_id: chat,
-          text: "⛔ Лимит на количество отправок анкеты исчерпан (5/5). Если есть важные дополнения — свяжись с админом."
-        });
-        return;
-      }
-    }
-
-    await answerCb("Секунду, записываю…");
-    await finalize(chat, { id: uid, username: q.from.username }, s);
-    return;
-  }
-}
+  if (data.startsWith("a2:")) { if (s.step !== "a2") { await answerCb(); return; } s.a2 = data.split(":")[1]; s.step =
