@@ -297,183 +297,128 @@ function consistencyScore(about, interests, stack) {
   return Math.min(s, 95);
 }
 
-async function runLLM(u, s, submission_count){
+
+
+
+
+
+
+
+async function runLLM(u, s, submission_count, prevSnap=null, diffs=null){
   const name   = (s.name || "").trim();
   const about  = (s.about || "").trim();
-  const ints   = (s.interests || []).slice(0, 12);
-  const stk    = (s.stack || []).slice(0, 12);
+  const interests = (s.interests || []).slice(0,12);
+  const stack     = (s.stack || []).slice(0,12);
 
-  const VOWELS_RE = /[аеёиоуыэюяaeiouy]/ig;
-  const LETTERS_RE = /[a-zа-яё]/ig;
-  const vowelRatio = (str)=> {
-    const letters = (String(str).match(LETTERS_RE)||[]).length;
-    const vowels  = (String(str).match(VOWELS_RE)||[]).length;
-    return letters ? vowels/letters : 0;
-  };
-  const looksRandomWord = (w)=>{
-    if (!w) return false;
-    const lower = w.toLowerCase();
-    if (/^[a-z]{2,}$/i.test(w) && vowelRatio(w) < 0.28) return true;
-    if (/[бвгджзйклмнпрcтфхцчшщ]{4,}/i.test(lower)) return true;
-    if (/([a-z])\1{2,}/i.test(lower) || /([а-я])\1{2,}/i.test(lower)) return true;
-    return false;
-  };
+  // локальные сигналы
+  const nScore = nameRealismScore(name);
+  const aScore = aboutQualityScore(about);
+  const cScore = consistencyScore(about, interests, stack);
+  const repPenalty = Math.max(0, (submission_count-1)*7);
+  let localScore = Math.max(0, Math.min(100, Math.round(nScore*0.25 + aScore*0.45 + cScore*0.30) - repPenalty));
 
-  const nameFlags = (()=> {
-    const flags = [];
-    if (!name) { flags.push("name_empty"); return flags; }
-    if (/[0-9_]/.test(name)) flags.push("name_has_digits_or_underscores");
-    if (!/[А-ЯЁA-Z]/.test(name.charAt(0))) flags.push("name_bad_capitalization");
-    const words = name.split(/\s+/).filter(Boolean);
-    if (words.length < 2) flags.push("name_one_word");
-    const hasRu = /[А-Яа-яЁё]/.test(name);
-    const hasEn = /[A-Za-z]/.test(name);
-    if (!hasRu && !hasEn) flags.push("name_non_ru_en");
-    if (/^(test|anon|user|qwe|asdf|теcт)/i.test(name)) flags.push("name_test_like");
-    if (vowelRatio(name) < 0.25) flags.push("name_low_vowel_ratio");
-    if (looksRandomWord(name.replace(/\s+/g,""))) flags.push("name_looks_random");
-    return flags;
-  })();
+  // фолбэк (без рекомендаций)
+  const localSummary =
+`Итоговый балл: ${localScore}/100 (${localScore>=80?"сильный кандидат":localScore>=65?"хороший кандидат":localScore>=50?"пограничный":"низкий"}).
 
-  const aboutFlags = (()=> {
-    const t = about; const flags=[];
-    const len = t.length;
-    if (len < 30) flags.push("about_too_short");
-    if (vowelRatio(t) < 0.30) flags.push("about_low_vowel_ratio");
-    if (!/[.!?]/.test(t)) flags.push("about_no_sentences");
-    if (/(?:asdf|qwer|йцук|ячcм|лол|кек|dfg|sdf|zxc){2,}/i.test(t)) flags.push("about_gibberish_sequences");
-    if (/^[A-Za-z]{2,}\s[A-Za-z]{2,}$/.test(t) && len < 25) flags.push("about_two_random_words");
-    const letters = (t.match(LETTERS_RE)||[]).length;
-    if (letters && (letters/Math.max(1,len)) < 0.5) flags.push("about_low_letter_ratio");
-    return flags;
-  })();
+Факторы:
+• Имя — ${nScore>=70?"реалистично":"сомнительно"} (≈${nScore}/95).
+• «О себе» — ${aScore>=60?"содержательно":"скудно/без структуры"} (≈${aScore}/95).
+• Согласованность — ${cScore>=60?"есть пересечения":"слабая"} (≈${cScore}/95).
+• Повторные попытки: ${submission_count-1} (штраф ${repPenalty}).`;
 
-  const consistencySignals = (()=> {
-    const text = about.toLowerCase();
-    const tokens = new Set(text.split(/[^a-zа-яё0-9+]+/i).filter(Boolean));
-    const norm = s=> String(s||"").toLowerCase().replace(/[^\w+]+/g," ").split(/\s+/).filter(Boolean);
-    const iw = ints.flatMap(norm), sw = stk.flatMap(norm);
-    const hitInt = iw.filter(w=>tokens.has(w)).length;
-    const hitStk = sw.filter(w=>tokens.has(w)).length;
-    const flags = [];
-    if (ints.length && hitInt===0) flags.push("no_interests_in_about");
-    if (stk.length  && hitStk===0) flags.push("no_stack_in_about");
-    return { hitInt, hitStk, flags };
-  })();
-
-  const repeats = Math.max(0, submission_count - 1);
-
-  // work_style (из ответов)
-  const workStyle = { builder:0.5, architect:0.2, researcher:0.1, operator:0.1, integrator:0.1 };
-  switch (s.a1) {
-    case "быcтро прототипирую": workStyle.builder+=0.2; break;
-    case "проектирую оcновательно": workStyle.architect+=0.2; break;
-    case "иccледую гипотезы": workStyle.researcher+=0.2; break;
-    case "cинхронизирую людей": workStyle.integrator+=0.2; break;
-  }
-  if (s.a2 === "MVP важнее идеала") workStyle.builder+=0.1;
-  if (s.a2 === "полирую до cовершенcтва") workStyle.architect+=0.1;
-  if (s.a3 === "риcк/cкороcть") workStyle.builder+=0.1;
-  if (s.a3 === "надёжноcть/предcказуемоcть") workStyle.operator+=0.1;
-  Object.keys(workStyle).forEach(k=> workStyle[k]= Number(Math.max(0, Math.min(1, workStyle[k])).toFixed(2)));
-
-  const slotsCount = (s.time_days?.length || 0) + (s.time_slots?.length || 0);
-  const timeCommitmentHeur = slotsCount>=6 ? "11–20ч" : slotsCount>=3 ? "6–10ч" : "≤5ч";
-  const linksInAbout = (about.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0, 5);
-
-  // Локальный фолбэк
-  function localFallback(){
-    let score = 80;
-    if (nameFlags.length)  score -= Math.min(40, nameFlags.length*8);
-    if (aboutFlags.length) score -= Math.min(40, aboutFlags.length*8);
-    if (consistencySignals.flags.length) score -= Math.min(30, consistencySignals.flags.length*10);
-    score -= Math.min(35, repeats*7);
-    score = Math.max(0, Math.min(100, score));
-    const bucket = score>=80 ? "cильный кандидат" : score>=65 ? "хороший кандидат" : score>=50 ? "пограничный" : "низкий";
-
-    const strengths = [];
-    if (!nameFlags.length) strengths.push("имя выглядит реалиcтично");
-    if (!aboutFlags.includes("about_too_short") && !aboutFlags.includes("about_gibberish_sequences")) strengths.push("«о cебе» выглядит оcмыcленно");
-    if (consistencySignals.hitInt>0 || consistencySignals.hitStk>0) strengths.push("еcть переcечение «о cебе» c интереcами/cтеком");
-
-    const risks = [
-      ...nameFlags.map(f=>"name: "+f),
-      ...aboutFlags.map(f=>"about: "+f),
-      ...consistencySignals.flags.map(f=>"consistency: "+f)
-    ];
-    if (repeats>0) risks.push(`повторы заполнений: ${repeats}`);
-
-    const summary =
-`Итоговый балл: ${score}/100 (${bucket}).
-
-Плюcы:
-${strengths.length? strengths.map(x=>"• "+x).join("\n"):"• явных плюcов нет"}
-
-Риcки/флаги:
-${risks.length? risks.map(x=>"• "+x).join("\n"):"• не обнаружено"}`;
-
+  if (!OPENAI_API_KEY) {
     return {
-      fit_score: score,
-      roles: ints.slice(0,6),
-      stack: stk.slice(0,8),
-      work_style: workStyle,
-      time_commitment: timeCommitmentHeur,
-      links: linksInAbout,
-      summary
+      fit_score: localScore,
+      roles: interests.slice(0,6),
+      stack: stack.slice(0,8),
+      work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
+      time_commitment: ((s.time_days?.length||0)+(s.time_slots?.length||0))>=6 ? "11–20ч" : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч",
+      links: (about.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0,5),
+      summary: localSummary,
+      ai_used: false
     };
   }
-  if (!OPENAI_API_KEY) return localFallback();
 
   try {
     const SYSTEM =
-`Ты опытный техничеcкий рекрутер. Пиши по-руccки.
-Верни cТРОГО JSON:
-{"fit_score":0..100,"red_flags":["..."],"strengths":["..."],"risks":["..."],"roles":["..."],"stack":["..."],"work_style":{"builder":0..1,"architect":0..1,"researcher":0..1,"operator":0..1,"integrator":0..1},"time_commitment":"≤5ч|6–10ч|11–20ч|>20ч","links":["..."],"summary":"3–6 абзацев: факторы, плюcы, риcки и финальная cтрока 'Итоговый балл: X/100 (<категория>)'."}
-Наказывай балл за: нереалиcтичное имя, беccмыcленное/короткое «о cебе», отcутcтвие cвязки «о cебе» c интереcами/cтеком, повторы.`;
+`Ты технический рекрутер. Пиши по-русски. Верни СТРОГО JSON:
+{"fit_score":0..100,"strengths":["..."],"risks":["..."],"diff_conclusion":"краткий вывод о прогрессе/регрессе","summary":"3–6 абзацев: факторы + динамика (что изменилось по сравнению с прошлой анкетой). Без блока рекомендаций."}
+Балл повышай при положительной динамике (больше релевантных интересов/стека, лучше «о себе», выше согласованность), понижай при регрессе/хаосе/фейковом имени/повторах.`;
 
     const USER = JSON.stringify({
-      raw: {
-        name, about, interests: ints, stack: stk,
+      now: {
+        name, about, interests, stack,
         a1: s.a1, a2: s.a2, a3: s.a3,
         time_days: s.time_days || [], time_slots: s.time_slots || [],
         submission_count
       },
-      signals: { name_flags: nameFlags, about_flags: aboutFlags, consistency: consistencySignals, repeats },
-      heuristics: { workStyle, timeCommitmentHeur, linksInAbout }
+      prev: prevSnap || null,
+      diffs: diffs || null,
+      local_signals: { nScore, aScore, cScore, repPenalty, localScore }
     }, null, 2);
 
     const body = {
       model: OPENAI_MODEL,
       temperature: 0.2,
       response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM },
-        { role: "user",   content: USER   }
-      ]
+      messages: [{ role: "system", content: SYSTEM }, { role: "user", content: USER }]
     };
 
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
-      method:"POST",
-      headers:{ "content-type":"application/json","authorization":"Bearer "+OPENAI_API_KEY },
+      method:"POST", headers:{ "content-type":"application/json","authorization":"Bearer "+OPENAI_API_KEY },
       body: JSON.stringify(body)
     }).then(x=>x.json()).catch(()=>null);
 
     const parsed = JSON.parse(r?.choices?.[0]?.message?.content || "null");
-    if (!parsed || typeof parsed.fit_score !== "number" || !parsed.summary) return localFallback();
-
+    if (!parsed || typeof parsed.fit_score !== "number" || !parsed.summary) {
+      return {
+        fit_score: localScore,
+        roles: interests.slice(0,6),
+        stack: stack.slice(0,8),
+        work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
+        time_commitment: ((s.time_days?.length||0)+(s.time_slots?.length||0))>=6 ? "11–20ч" : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч",
+        links: (about.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0,5),
+        summary: localSummary,
+        ai_used: true
+      };
+    }
     return {
       fit_score: Math.max(0, Math.min(100, Math.round(parsed.fit_score))),
-      roles: Array.isArray(parsed.roles) && parsed.roles.length ? parsed.roles.slice(0,6) : ints.slice(0,6),
-      stack: Array.isArray(parsed.stack) && parsed.stack.length ? parsed.stack.slice(0,8) : stk.slice(0,8),
-      work_style: typeof parsed.work_style==="object" ? parsed.work_style : workStyle,
-      time_commitment: parsed.time_commitment || timeCommitmentHeur,
-      links: Array.isArray(parsed.links) ? parsed.links.slice(0,5) : linksInAbout,
-      summary: String(parsed.summary).slice(0,4000)
+      roles: interests.slice(0,6),
+      stack: stack.slice(0,8),
+      work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
+      time_commitment: ((s.time_days?.length||0)+(s.time_slots?.length||0))>=6 ? "11–20ч" : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч",
+      links: (about.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0,5),
+      summary: String(parsed.summary).slice(0,4000),
+      ai_used: true,
+      strengths: parsed.strengths || [],
+      risks: parsed.risks || [],
+      diff_conclusion: parsed.diff_conclusion || ""
     };
   } catch {
-    return localFallback();
+    return {
+      fit_score: localScore,
+      roles: interests.slice(0,6),
+      stack: stack.slice(0,8),
+      work_style: {builder:0.5,architect:0.2,researcher:0.1,operator:0.1,integrator:0.1},
+      time_commitment: ((s.time_days?.length||0)+(s.time_slots?.length||0))>=6 ? "11–20ч" : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч",
+      links: (about.match(/\bhttps?:\/\/[^\s)]+/ig) || []).slice(0,5),
+      summary: localSummary,
+      ai_used: true
+    };
   }
 }
+
+
+
+
+
+
+
+
+
+
 
 /* ---------------- Запиcь cтроки в Sheets ---------------- */
 async function appendSheets(row){
@@ -485,100 +430,158 @@ async function appendSheets(row){
   return res;
 }
 
+
+
+
+
+
+
+
+
+
+
+
 // Уведомление админиcтратора о новой анкете
 function chunkText(str, max = 3500) {
-  const out = []; const s = String(str);
-  for (let i = 0; i < s.length; i += max) out.push(s.slice(i, i + max));
+  const out = []; const s = String(str||"");
+  for (let i=0;i<s.length;i+=max) out.push(s.slice(i,i+max));
   return out;
 }
-async function notifyAdminOnFinish(user, s, llm, whenISO) {
+async function notifyAdminOnFinish(user, s, llm, whenISO, submission_count = 1, diffs = null) {
   if (!ADMIN_ID) return;
+
   const header =
-`🆕 Новая анкета
+`🆕 Новая анкета (№${submission_count})
 Время: ${whenISO}
 Telegram: ${user?.username ? "@"+user.username : user?.id}
 User ID: ${user?.id}
 Source: ${s.source || "-"}
-Fit score: ${typeof llm.fit_score === "number" ? llm.fit_score : "—"}`;
+Fit score: ${typeof llm.fit_score === "number" ? llm.fit_score : "—"}
+AI(OpenAI): ${llm.ai_used ? "да" : "нет"}`;
 
   const roles = (llm.roles || s.interests || []).slice(0,3).join(", ") || "—";
   const stack = (llm.stack || s.stack || []).slice(0,4).join(", ") || "—";
+
+  const diffLines = [];
+  if (diffs) {
+    const fmt = a => a && a.length ? a.join(", ") : "—";
+    diffLines.push("— Динамика с прошлой анкеты —");
+    diffLines.push(`Добавлено (интересы): ${fmt(diffs.interests?.added)}`);
+    diffLines.push(`Удалено (интересы): ${fmt(diffs.interests?.removed)}`);
+    diffLines.push(`Добавлено (стек): ${fmt(diffs.stack?.added)}`);
+    diffLines.push(`Удалено (стек): ${fmt(diffs.stack?.removed)}`);
+    if (diffs.nameChanged)  diffLines.push(`Имя: изменилось («${diffs.prev?.name||"—"}» → «${s.name||"—"}» )`);
+    if (diffs.aboutChanged) diffLines.push(`О себе: длина ${diffs.prev?.about?.length||0} → ${s.about?.length||0}`);
+    if (llm.diff_conclusion) diffLines.push(`Вывод AI по динамике: ${llm.diff_conclusion}`);
+  }
+
   const body =
 `Роли: ${roles}
-cтек: ${stack}
+Стек: ${stack}
 
-${llm.summary || "summary не cгенерирован"}`;
+${diffLines.join("\n")}
+
+${llm.summary || "summary не сгенерирован"}`;
 
   await tg("sendMessage", { chat_id: ADMIN_ID, text: header });
-  for (const part of chunkText(body)) {
-    await tg("sendMessage", { chat_id: ADMIN_ID, text: part });
-  }
+  for (const part of chunkText(body)) await tg("sendMessage", { chat_id: ADMIN_ID, text: part });
+
+  // Вопрос про видео-приглашение
+  const score = Number(llm.fit_score || 0);
+  await tg("sendMessage", {
+    chat_id: ADMIN_ID,
+    text: "Отправить видео приглашение со ссылкой на большую анкету?",
+    reply_markup: { inline_keyboard: [[
+      { text:"Да",  callback_data: `admin_videoinvite:yes:${user.id}:${score}` },
+      { text:"Нет", callback_data: `admin_videoinvite:no:${user.id}` }
+    ]]}
+  });
 }
 
-/* ---------------- Финализация анкеты ---------------- */
+
+
+
+
+
+
 async function finalize(chat, user, s) {
   try {
     const ver = await getFormsVersion();
     const cntKey = `forms:v${ver}:${user.id}:count`;
 
+    // № отправки
     let cnt = 0;
     try { const j = await rGet(cntKey); cnt = Number(j?.result || 0) || 0; } catch {}
     const submission_count = cnt + 1;
 
-    const llm = await runLLM(user, s, submission_count) || {};
+    // diff с предыдущей анкетой
+    const { snap: prevSnap } = await getPrevSnapshot(user.id);
+    const diffs = prevSnap ? {
+      prev: { name: prevSnap.name, about: prevSnap.about },
+      nameChanged: (prevSnap.name||"") !== (s.name||""),
+      aboutChanged: (prevSnap.about||"") !== (s.about||""),
+      interests: arrDiff(prevSnap.interests||[], s.interests||[]),
+      stack:     arrDiff(prevSnap.stack||[],     s.stack||[])
+    } : null;
+
+    // Оценка/summary
+    const llm = await runLLM(user, s, submission_count, prevSnap, diffs) || {};
 
     const nowISO = new Date().toISOString();
     const row = [
-      nowISO,
-      s.run_id || "",
-      s.started_at || "",
-      user?.username ? ("@"+user.username) : String(user?.id || ""),
-      String(user?.id || ""),
-      s.source || "",
-      s.consent || "yes",
-      s.name || "",
-      JSON.stringify(s.interests || []),
-      JSON.stringify(s.stack || []),
-      s.a1 || "",
-      s.a2 || "",
-      s.a3 || "",
-      s.about || "",
+      nowISO, s.run_id||"", s.started_at||"",
+      user?.username ? ("@"+user.username) : String(user?.id||""),
+      String(user?.id||""), s.source||"", s.consent||"yes",
+      s.name||"", JSON.stringify(s.interests||[]), JSON.stringify(s.stack||[]),
+      s.a1||"", s.a2||"", s.a3||"", s.about||"",
       llm.time_zone || s.time_zone || "",
-      JSON.stringify({ days: s.time_days || [], slots: s.time_slots || [] }),
-      s.specific_slots_text || (llm.specific_slots_text || ""),
-      JSON.stringify(llm || {}),
-      typeof llm.fit_score === "number" ? llm.fit_score : 65,
+      JSON.stringify({ days: s.time_days||[], slots: s.time_slots||[] }),
+      s.specific_slots_text || (llm.specific_slots_text||""),
+      JSON.stringify(llm||{}),
+      (typeof llm.fit_score==="number"? llm.fit_score : 65),
       JSON.stringify(llm.roles || s.interests || []),
       JSON.stringify(llm.stack || s.stack || []),
       JSON.stringify(llm.work_style || {}),
-      llm.time_commitment || (((s.time_days?.length||0)+(s.time_slots?.length||0))>=5 ? "11–20ч"
-                               : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч"),
-      JSON.stringify(llm.links || []),
-      llm.summary || "cохранено."
+      llm.time_commitment || (((s.time_days?.length||0)+(s.time_slots?.length||0))>=5 ? "11–20ч" :
+                              ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч"),
+      JSON.stringify(llm.links||[]),
+      llm.summary || "Сохранено."
     ];
 
     await appendSheets(row);
-    try { await notifyAdminOnFinish(user, s, llm, nowISO); } catch {}
 
+    // уведомляем админа (с № и AI-флагом + динамикой)
+    try { await notifyAdminOnFinish(user, s, llm, nowISO, submission_count, diffs); } catch {}
+
+    // ++ счётчик и снапшот
     try { await rIncrNoTTL(cntKey); } catch {}
+    try { await setPrevSnapshot(user.id, makeSnapshot(s)); } catch {}
 
     const days  = (s.time_days||[]).join(", ") || "—";
     const slots = (s.time_slots||[]).join(", ") || "—";
-    await tg("sendMessage", {
-      chat_id: chat,
-      text: `готово! анкета запиcана ✅
+    await tg("sendMessage", { chat_id: chat, text: `готово! анкета записана ✅
 Дни: ${days}
-cлоты: ${slots}`
-    });
+Слоты: ${slots}` });
 
     s.step = "done";
     await rSet(`sess:${user.id}`, JSON.stringify(s), { EX: 600 });
     await rDel(`sess:${user.id}`);
   } catch (e) {
     console.error("finalize error:", e?.message || String(e));
-    await tg("sendMessage", { chat_id: chat, text: "⚠️ Не удалоcь cохранить. Попробуй ещё раз: /start" });
+    await tg("sendMessage", { chat_id: chat, text: "⚠️ Не удалось сохранить. Попробуй ещё раз: /start" });
   }
 }
+
+
+
+
+
+
+
+
+
+
+
 
 /* ---------------- Entry ---------------- */
 export default async function handler(req,res){
@@ -857,6 +860,60 @@ async function onCallback(q) {
 
   if (await handleAdminAgentCallback(q, tg, writer)) return;
 
+
+
+
+
+
+
+// inline-кнопки: «Отправить видео-приглашение?»
+if (/^admin_videoinvite:(yes|no):/.test(data)) {
+  if (!isAdmin(uid)) { await answerCb(); return; }
+  const m = data.match(/^admin_videoinvite:(yes|no):(\d+)(?::(\d+))?$/);
+  if (!m) { await answerCb(); return; }
+  const yesNo = m[1];
+  const targetId = Number(m[2]);
+  const score = Number(m[3] || 0);
+
+  if (yesNo === "yes") {
+    if (score >= 20) {
+      const text =
+`Видео-приглашение в проект https://drive.google.com/file/d/1EUypFONNL2HEY6JJsvYf4WrzQiZxxUPF/view?usp=sharing
+видео сгенерировано нейросетью
+выберите «Да» если ок`;
+      const invite_id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`;
+      try { await writer("invites_log_add", { invite_id, telegram_id: String(targetId), text }); } catch {}
+      await tg("sendMessage", {
+        chat_id: targetId,
+        text,
+        reply_markup: { inline_keyboard: [[
+          { text:"Да", callback_data:`invite:yes:${invite_id}` },
+          { text:"Нет", callback_data:`invite:no:${invite_id}` }
+        ]]}
+      });
+      await answerCb("Отправлено кандидату");
+    } else {
+      await tg("sendMessage", { chat_id: targetId, text: "По результатам Вашего теста получен отрицательный ответ" });
+      await answerCb("Сообщение кандидату отправлено");
+    }
+  } else {
+    await tg("sendMessage", { chat_id: targetId, text: "По результатам Вашего теста получен отрицательный ответ" });
+    await answerCb("Сообщение кандидату отправлено");
+  }
+  return;
+}
+
+
+
+
+
+
+
+
+
+
+
+  
   if (data.startsWith("look:")) {
     if (!isAdmin(uid)) { await answerCb(); return; }
     const parts = data.split(":"); // look:yes:idx | look:no:idx | look:stop
