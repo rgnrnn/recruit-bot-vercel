@@ -1007,9 +1007,9 @@ if (/^admin_videoinvite:(yes|no):/.test(data)) {
 
   if (yesNo === "yes") {
     if (score >= 20) {
-      const text = `Видео-приглашение в проект https://drive.google.com/file/d/1EUypFONNL2HEY6JJsvYf4WrzQiZxxUPF/view?usp=sharing
-видео сгенерировано нейросетью
-выберите «Да» если ок`;
+      const text = `краткое видео 🎥 о проекте по этой ссылке: https://drive.google.com/file/d/1EUypFONNL2HEY6JJsvYf4WrzQiZxxUPF/view?usp=sharing
+видео сгенерировано нейросетью 🤖
+если после его просмотра/прослушки согласен идти дальше выбери 🔵`;
       const invite_id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`;
       try { await writer("invites_log_add", { invite_id, telegram_id: String(targetId), text }); } catch {}
       await tg("sendMessage", {
