@@ -139,6 +139,59 @@ async function seenUpdate(id){ try{ const j=await rSet(`upd:${id}`,"1",{EX:180,N
 // --- helper: rate-limit (вернули, чтобы не было "overRL is not defined")
 async function overRL(uid,limit=12){ try{ return (await rIncr(`rl:${uid}`,60))>limit; }catch{ return false; } }
 
+
+
+
+
+// --- snapshot предыдущей анкеты (для diff и динамики)
+function makeSnapshot(s){
+  return {
+    name: s.name || "",
+    about: s.about || "",
+    interests: Array.isArray(s.interests) ? [...s.interests] : [],
+    stack: Array.isArray(s.stack) ? [...s.stack] : [],
+    a1: s.a1 || "", a2: s.a2 || "", a3: s.a3 || "",
+    time_days: Array.isArray(s.time_days) ? [...s.time_days] : [],
+    time_slots: Array.isArray(s.time_slots) ? [...s.time_slots] : []
+  };
+}
+
+async function getPrevSnapshot(uid){
+  const ver = await getFormsVersion();
+  const key = `forms:last:v${ver}:${uid}`;
+  try{
+    const j = await rGet(key);
+    if (!j?.result) return { key, snap: null };
+    return { key, snap: JSON.parse(j.result) };
+  }catch{
+    return { key, snap: null };
+  }
+}
+
+async function setPrevSnapshot(uid, snap){
+  const ver = await getFormsVersion();
+  const key = `forms:last:v${ver}:${uid}`;
+  // храним 180 дней, можно уменьшить при желании
+  try { await rSet(key, JSON.stringify(snap), { EX: 3600 * 24 * 180 }); } catch {}
+}
+
+function arrDiff(prev = [], curr = []){
+  const p = new Set(prev); const c = new Set(curr);
+  const added   = [...c].filter(x => !p.has(x));
+  const removed = [...p].filter(x => !c.has(x));
+  const same    = [...c].filter(x => p.has(x));
+  return { added, removed, same };
+}
+
+
+
+
+
+
+
+
+
+
 /* ---------------- Writer (Apps Script) ---------------- */
 async function writer(op, payload = {}, asText = false) {
   if (!SHEETS_URL || !SHEETS_SECRET) return asText ? "" : { ok:false, reason:"env_missing" };
