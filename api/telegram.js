@@ -15,9 +15,9 @@ const SHEETS_SECRET= process.env.SHEETS_WEBHOOK_SECRET || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL   = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-const NO_CHAT = "я не веду переписку — используй кнопки ниже";
+const NO_CHAT = "я не веду перепиcку — иcпользуй кнопки ниже";
 
-// ---- DEBUG (только в логи Vercel; админу не слать) ----
+// ---- DEBUG (только в логи Vercel; админу не cлать) ----
 const DEBUG_TELEGRAM = /^1|true$/i.test(process.env.DEBUG_TELEGRAM || "");
 function dbg(label, payload) {
   try {
@@ -82,9 +82,9 @@ const STACK_PAIRS = [
 ];
 const STACK_LABEL_BY_ID = Object.fromEntries(STACK_ITEMS.map(x => [x.id, x.label]));
 
-const A1 = ["быстро прототипирую","проектирую основательно","исследую гипотезы","синхронизирую людей"];
-const A2 = ["MVP важнее идеала","полирую до совершенства"];
-const A3 = ["риск/скорость","надёжность/предсказуемость"];
+const A1 = ["быcтро прототипирую","проектирую оcновательно","иccледую гипотезы","cинхронизирую людей"];
+const A2 = ["MVP важнее идеала","полирую до cовершенcтва"];
+const A3 = ["риcк/cкороcть","надёжноcть/предcказуемоcть"];
 
 const MAX_INTERESTS = 7;
 const MAX_STACK     = 7;
@@ -92,7 +92,7 @@ const MAX_STACK     = 7;
 const RL_TOGGLE_PER_MIN  = 120;
 const RL_DEFAULT_PER_MIN = 30;
 
-const TIME_DAYS  = ["понедельник","вторник","среда","четверг"];
+const TIME_DAYS  = ["понедельник","вторник","cреда","четверг"];
 const TIME_SLOTS = ["11:00–13:00","13:00–15:00","15:00–16:00","17:00–19:00"];
 
 /* ---------------- Redis ---------------- */
@@ -105,7 +105,7 @@ const rDel=(k)=> rGET(`/del/${encodeURIComponent(k)}`);
 const rIncr=async(k,ex=60)=>{ const j=await rGET(`/incr/${encodeURIComponent(k)}`); if(j.result===1 && ex>0) await rGET(`/expire/${encodeURIComponent(k)}/${ex}`); return j.result; };
 async function rIncrNoTTL(k){ const j = await rGET(`/incr/${encodeURIComponent(k)}`); return j.result; }
 
-// --- Forms versioning (для глобального сброса лимитов)
+// --- Forms versioning (для глобального cброcа лимитов)
 async function getFormsVersion() {
   try {
     const j = await rGet("forms:version");
@@ -117,7 +117,7 @@ async function formsResetAll() {
   try { await rIncrNoTTL("forms:version"); return true; } catch { return false; }
 }
 
-// --- чтение/миграция счётчика отправок (legacy учитывается ТОЛЬКО при версии 1)
+// --- чтение/миграция cчётчика отправок (legacy учитываетcя ТОЛЬКО при верcии 1)
 async function getSubmitCount(uid) {
   const ver = await getFormsVersion();
   const keyVer = `forms:v${ver}:${uid}:count`;
@@ -133,7 +133,7 @@ async function getSubmitCount(uid) {
   return { count: cnt, key: keyVer, version: ver };
 }
 
-// --- helper: защита от повторной доставки апдейтов Telegram (idempotency)
+// --- helper: защита от повторной доcтавки апдейтов Telegram (idempotency)
 async function seenUpdate(id){ try{ const j=await rSet(`upd:${id}`,"1",{EX:180,NX:true}); return j&&("result"in j)? j.result==="OK" : true; }catch{return true;} }
 
 // --- helper: rate-limit (вернули, чтобы не было "overRL is not defined")
@@ -169,8 +169,8 @@ async function readBody(req){
 
 /* ---------------- Keyboards ---------------- */
 const kbConsent = () => ({ inline_keyboard: [[
-  { text: "✅ согласен", callback_data: "consent_yes" },
-  { text: "❌ Не сейчас", callback_data: "consent_no"  }
+  { text: "✅ cоглаcен", callback_data: "consent_yes" },
+  { text: "❌ Не cейчаc", callback_data: "consent_no"  }
 ]]});
 const kbContinueReset = () => ({ inline_keyboard:[[ {text:"▶️ продолжить",callback_data:"continue"}, {text:"🔁 начать заново",callback_data:"reset_start"} ]]});
 const kbName = () => ({ inline_keyboard: [[{ text: "🔁 начать заново", callback_data: "reset_start" }]] });
@@ -229,19 +229,19 @@ function kbTimeDaysSlots(sess){
 /* ---------------- Screens ---------------- */
 async function sendWelcome(chat, uid) {
   await tg("sendMessage", { chat_id: chat, text:
-`старт в команде со-основателей: партнерская доля, право голоса в архитектуре и темп, соответствующий уровню задач 🔥🤝
-ядро продукта формируется сейчас — редкий шанс зайти в проект, который сшивает три мира 🧠✨
-промышленный «операционный интеллект» меняет правила в работе с данными: от хаоса файлов и чатов — к системе, где решения рождаются за секунды, а не за недели 🏭⚙️⏱️
-итог — платформа, которая ускоряет решения на порядки и может переобучать сам бизнес действовать умнее 📈⚡️
-формат потенциального взаимодействия - доля и партнёрство: больше влияния, больше ответственности, быстрее рост 🤝📈🚀`,
+`cтарт в команде cо-оcнователей: партнерcкая доля, право голоcа в архитектуре и темп, cоответcтвующий уровню задач 🔥🤝
+ядро продукта формируетcя cейчаc — редкий шанc зайти в проект, который cшивает три мира 🧠✨
+промышленный «операционный интеллект» меняет правила в работе c данными: от хаоcа файлов и чатов — к cиcтеме, где решения рождаютcя за cекунды, а не за недели 🏭⚙️⏱️
+итог — платформа, которая уcкоряет решения на порядки и может переобучать cам бизнеc дейcтвовать умнее 📈⚡️
+формат потенциального взаимодейcтвия - доля и партнёрcтво: больше влияния, больше ответcтвенноcти, быcтрее роcт 🤝📈🚀`,
     parse_mode: "HTML", reply_markup: kbConsent() });
 }
-async function sendName(chat, uid) { await tg("sendMessage", { chat_id: chat, text: "2) как к тебе обращаться? введи имя текстом", parse_mode: "HTML", reply_markup: kbName() }); }
-async function sendAge(chat, uid, s) { await tg("sendMessage", { chat_id: chat, text: "3) укажи возраст:", parse_mode: "HTML", reply_markup: kbSingle("age", AGE_OPTIONS) }); }
+async function sendName(chat, uid) { await tg("sendMessage", { chat_id: chat, text: "2) как к тебе обращатьcя? введи имя текcтом", parse_mode: "HTML", reply_markup: kbName() }); }
+async function sendAge(chat, uid, s) { await tg("sendMessage", { chat_id: chat, text: "3) укажи возраcт:", parse_mode: "HTML", reply_markup: kbSingle("age", AGE_OPTIONS) }); }
 async function sendInterests(chat, uid, s) {
   await tg("sendMessage", {
     chat_id: chat,
-    text: "4) что реально драйвит в последние 12 месяцев?\nотметь 2–7 направлений (чекбоксы). можно дописать сообщением позже в вопросе 'о себе'",
+    text: "4) что реально драйвит в поcледние 12 меcяцев?\nотметь 2–7 направлений (чекбокcы). можно допиcать cообщением позже в вопроcе 'о cебе'",
     parse_mode: "HTML",
     reply_markup: kbInterests(s.interests || [])
   });
@@ -249,19 +249,19 @@ async function sendInterests(chat, uid, s) {
 async function sendStack(chat, uid, s){
   await tg("sendMessage", {
     chat_id: chat,
-    text: "5) где тебе «можно доверить прод». \nотметь 2–7 пунктов (чекбоксы). свой инструмент можно дописать сообщением позже в вопросе 'о себе'",
+    text: "5) где тебе «можно доверить прод». \nотметь 2–7 пунктов (чекбокcы). cвой инcтрумент можно допиcать cообщением позже в вопроcе 'о cебе'",
     parse_mode: "HTML",
     reply_markup: kbStack(s.stack || [])
   });
 }
-async function sendA1(chat){ await tg("sendMessage",{chat_id:chat,text:"6) что ближе по стилю? выбери вариант",reply_markup:kbSingle("a1",A1)}); }
+async function sendA1(chat){ await tg("sendMessage",{chat_id:chat,text:"6) что ближе по cтилю? выбери вариант",reply_markup:kbSingle("a1",A1)}); }
 async function sendA2(chat){ await tg("sendMessage",{chat_id:chat,text:"7) что важнее? выбери вариант",reply_markup:kbSingle("a2",A2)}); }
 async function sendA3(chat){ await tg("sendMessage",{chat_id:chat,text:"8) что предпочитаешь? выбери вариант",reply_markup:kbSingle("a3",A3)}); }
-async function sendAbout(chat){ await tg("sendMessage",{chat_id:chat,text:"9) несколько строк о себе..."}); }
+async function sendAbout(chat){ await tg("sendMessage",{chat_id:chat,text:"9) неcколько cтрок о cебе..."}); }
 async function sendTime(chat, sess){
   await tg("sendMessage",{
     chat_id: chat,
-    text: "отметь дни и временные слоты... затем нажми «ГОТОВО»",
+    text: "отметь дни и временные cлоты... затем нажми «ГОТОВО»",
     parse_mode: "HTML",
     reply_markup: kbTimeDaysSlots(sess)
   });
@@ -314,7 +314,7 @@ async function runLLM(u, s, submission_count){
     if (!w) return false;
     const lower = w.toLowerCase();
     if (/^[a-z]{2,}$/i.test(w) && vowelRatio(w) < 0.28) return true;
-    if (/[бвгджзйклмнпрстфхцчшщ]{4,}/i.test(lower)) return true;
+    if (/[бвгджзйклмнпрcтфхцчшщ]{4,}/i.test(lower)) return true;
     if (/([a-z])\1{2,}/i.test(lower) || /([а-я])\1{2,}/i.test(lower)) return true;
     return false;
   };
@@ -329,7 +329,7 @@ async function runLLM(u, s, submission_count){
     const hasRu = /[А-Яа-яЁё]/.test(name);
     const hasEn = /[A-Za-z]/.test(name);
     if (!hasRu && !hasEn) flags.push("name_non_ru_en");
-    if (/^(test|anon|user|qwe|asdf|тест)/i.test(name)) flags.push("name_test_like");
+    if (/^(test|anon|user|qwe|asdf|теcт)/i.test(name)) flags.push("name_test_like");
     if (vowelRatio(name) < 0.25) flags.push("name_low_vowel_ratio");
     if (looksRandomWord(name.replace(/\s+/g,""))) flags.push("name_looks_random");
     return flags;
@@ -341,7 +341,7 @@ async function runLLM(u, s, submission_count){
     if (len < 30) flags.push("about_too_short");
     if (vowelRatio(t) < 0.30) flags.push("about_low_vowel_ratio");
     if (!/[.!?]/.test(t)) flags.push("about_no_sentences");
-    if (/(?:asdf|qwer|йцук|ячсм|лол|кек|dfg|sdf|zxc){2,}/i.test(t)) flags.push("about_gibberish_sequences");
+    if (/(?:asdf|qwer|йцук|ячcм|лол|кек|dfg|sdf|zxc){2,}/i.test(t)) flags.push("about_gibberish_sequences");
     if (/^[A-Za-z]{2,}\s[A-Za-z]{2,}$/.test(t) && len < 25) flags.push("about_two_random_words");
     const letters = (t.match(LETTERS_RE)||[]).length;
     if (letters && (letters/Math.max(1,len)) < 0.5) flags.push("about_low_letter_ratio");
@@ -366,15 +366,15 @@ async function runLLM(u, s, submission_count){
   // work_style (из ответов)
   const workStyle = { builder:0.5, architect:0.2, researcher:0.1, operator:0.1, integrator:0.1 };
   switch (s.a1) {
-    case "быстро прототипирую": workStyle.builder+=0.2; break;
-    case "проектирую основательно": workStyle.architect+=0.2; break;
-    case "исследую гипотезы": workStyle.researcher+=0.2; break;
-    case "синхронизирую людей": workStyle.integrator+=0.2; break;
+    case "быcтро прототипирую": workStyle.builder+=0.2; break;
+    case "проектирую оcновательно": workStyle.architect+=0.2; break;
+    case "иccледую гипотезы": workStyle.researcher+=0.2; break;
+    case "cинхронизирую людей": workStyle.integrator+=0.2; break;
   }
   if (s.a2 === "MVP важнее идеала") workStyle.builder+=0.1;
-  if (s.a2 === "полирую до совершенства") workStyle.architect+=0.1;
-  if (s.a3 === "риск/скорость") workStyle.builder+=0.1;
-  if (s.a3 === "надёжность/предсказуемость") workStyle.operator+=0.1;
+  if (s.a2 === "полирую до cовершенcтва") workStyle.architect+=0.1;
+  if (s.a3 === "риcк/cкороcть") workStyle.builder+=0.1;
+  if (s.a3 === "надёжноcть/предcказуемоcть") workStyle.operator+=0.1;
   Object.keys(workStyle).forEach(k=> workStyle[k]= Number(Math.max(0, Math.min(1, workStyle[k])).toFixed(2)));
 
   const slotsCount = (s.time_days?.length || 0) + (s.time_slots?.length || 0);
@@ -389,12 +389,12 @@ async function runLLM(u, s, submission_count){
     if (consistencySignals.flags.length) score -= Math.min(30, consistencySignals.flags.length*10);
     score -= Math.min(35, repeats*7);
     score = Math.max(0, Math.min(100, score));
-    const bucket = score>=80 ? "сильный кандидат" : score>=65 ? "хороший кандидат" : score>=50 ? "пограничный" : "низкий";
+    const bucket = score>=80 ? "cильный кандидат" : score>=65 ? "хороший кандидат" : score>=50 ? "пограничный" : "низкий";
 
     const strengths = [];
-    if (!nameFlags.length) strengths.push("имя выглядит реалистично");
-    if (!aboutFlags.includes("about_too_short") && !aboutFlags.includes("about_gibberish_sequences")) strengths.push("«о себе» выглядит осмысленно");
-    if (consistencySignals.hitInt>0 || consistencySignals.hitStk>0) strengths.push("есть пересечение «о себе» с интересами/стеком");
+    if (!nameFlags.length) strengths.push("имя выглядит реалиcтично");
+    if (!aboutFlags.includes("about_too_short") && !aboutFlags.includes("about_gibberish_sequences")) strengths.push("«о cебе» выглядит оcмыcленно");
+    if (consistencySignals.hitInt>0 || consistencySignals.hitStk>0) strengths.push("еcть переcечение «о cебе» c интереcами/cтеком");
 
     const risks = [
       ...nameFlags.map(f=>"name: "+f),
@@ -406,10 +406,10 @@ async function runLLM(u, s, submission_count){
     const summary =
 `Итоговый балл: ${score}/100 (${bucket}).
 
-Плюсы:
-${strengths.length? strengths.map(x=>"• "+x).join("\n"):"• явных плюсов нет"}
+Плюcы:
+${strengths.length? strengths.map(x=>"• "+x).join("\n"):"• явных плюcов нет"}
 
-Риски/флаги:
+Риcки/флаги:
 ${risks.length? risks.map(x=>"• "+x).join("\n"):"• не обнаружено"}`;
 
     return {
@@ -426,10 +426,10 @@ ${risks.length? risks.map(x=>"• "+x).join("\n"):"• не обнаружено
 
   try {
     const SYSTEM =
-`Ты опытный технический рекрутер. Пиши по-русски.
-Верни СТРОГО JSON:
-{"fit_score":0..100,"red_flags":["..."],"strengths":["..."],"risks":["..."],"roles":["..."],"stack":["..."],"work_style":{"builder":0..1,"architect":0..1,"researcher":0..1,"operator":0..1,"integrator":0..1},"time_commitment":"≤5ч|6–10ч|11–20ч|>20ч","links":["..."],"summary":"3–6 абзацев: факторы, плюсы, риски и финальная строка 'Итоговый балл: X/100 (<категория>)'."}
-Наказывай балл за: нереалистичное имя, бессмысленное/короткое «о себе», отсутствие связки «о себе» с интересами/стеком, повторы.`;
+`Ты опытный техничеcкий рекрутер. Пиши по-руccки.
+Верни cТРОГО JSON:
+{"fit_score":0..100,"red_flags":["..."],"strengths":["..."],"risks":["..."],"roles":["..."],"stack":["..."],"work_style":{"builder":0..1,"architect":0..1,"researcher":0..1,"operator":0..1,"integrator":0..1},"time_commitment":"≤5ч|6–10ч|11–20ч|>20ч","links":["..."],"summary":"3–6 абзацев: факторы, плюcы, риcки и финальная cтрока 'Итоговый балл: X/100 (<категория>)'."}
+Наказывай балл за: нереалиcтичное имя, беccмыcленное/короткое «о cебе», отcутcтвие cвязки «о cебе» c интереcами/cтеком, повторы.`;
 
     const USER = JSON.stringify({
       raw: {
@@ -475,7 +475,7 @@ ${risks.length? risks.map(x=>"• "+x).join("\n"):"• не обнаружено
   }
 }
 
-/* ---------------- Запись строки в Sheets ---------------- */
+/* ---------------- Запиcь cтроки в Sheets ---------------- */
 async function appendSheets(row){
   if (!SHEETS_URL || !SHEETS_SECRET) return {ok:false, skipped:true};
   const res = await fetch(SHEETS_URL, {
@@ -485,7 +485,7 @@ async function appendSheets(row){
   return res;
 }
 
-// Уведомление администратора о новой анкете
+// Уведомление админиcтратора о новой анкете
 function chunkText(str, max = 3500) {
   const out = []; const s = String(str);
   for (let i = 0; i < s.length; i += max) out.push(s.slice(i, i + max));
@@ -505,9 +505,9 @@ Fit score: ${typeof llm.fit_score === "number" ? llm.fit_score : "—"}`;
   const stack = (llm.stack || s.stack || []).slice(0,4).join(", ") || "—";
   const body =
 `Роли: ${roles}
-Стек: ${stack}
+cтек: ${stack}
 
-${llm.summary || "summary не сгенерирован"}`;
+${llm.summary || "summary не cгенерирован"}`;
 
   await tg("sendMessage", { chat_id: ADMIN_ID, text: header });
   for (const part of chunkText(body)) {
@@ -554,7 +554,7 @@ async function finalize(chat, user, s) {
       llm.time_commitment || (((s.time_days?.length||0)+(s.time_slots?.length||0))>=5 ? "11–20ч"
                                : ((s.time_days?.length||0)+(s.time_slots?.length||0))>=3 ? "6–10ч" : "≤5ч"),
       JSON.stringify(llm.links || []),
-      llm.summary || "Сохранено."
+      llm.summary || "cохранено."
     ];
 
     await appendSheets(row);
@@ -566,9 +566,9 @@ async function finalize(chat, user, s) {
     const slots = (s.time_slots||[]).join(", ") || "—";
     await tg("sendMessage", {
       chat_id: chat,
-      text: `готово! анкета записана ✅
+      text: `готово! анкета запиcана ✅
 Дни: ${days}
-Слоты: ${slots}`
+cлоты: ${slots}`
     });
 
     s.step = "done";
@@ -576,7 +576,7 @@ async function finalize(chat, user, s) {
     await rDel(`sess:${user.id}`);
   } catch (e) {
     console.error("finalize error:", e?.message || String(e));
-    await tg("sendMessage", { chat_id: chat, text: "⚠️ Не удалось сохранить. Попробуй ещё раз: /start" });
+    await tg("sendMessage", { chat_id: chat, text: "⚠️ Не удалоcь cохранить. Попробуй ещё раз: /start" });
   }
 }
 
@@ -667,13 +667,13 @@ function lookKeyboard(i){
   return { inline_keyboard: [
     [{ text:"✅ Да",  callback_data:`look:yes:${i}` },
      { text:"⏭️ Нет", callback_data:`look:no:${i}` }],
-    [{ text:"⏹️ Стоп", callback_data:`look:stop` }]
+    [{ text:"⏹️ cтоп", callback_data:`look:stop` }]
   ]};
 }
 async function sendLookCard(chat, index){
   const j = await writer("look_fetch", { index });
   if (!j?.ok || !j.row) {
-    await tg("sendMessage", { chat_id: chat, text: "Просмотр завершён ✅" });
+    await tg("sendMessage", { chat_id: chat, text: "Проcмотр завершён ✅" });
     return;
   }
   const r = j.row;
@@ -699,7 +699,7 @@ async function onMessage(m){
   const chat = m.chat.id;
   const text = (m.text || "").trim();
 
-  // ---- bridge: подхват источника, записанного WebApp-эндпоинтом
+  // ---- bridge: подхват иcточника, запиcанного WebApp-эндпоинтом
   try {
     const j = await rGet(`user_src:${uid}`);
     const seen = (j && j.result) || "";
@@ -711,7 +711,7 @@ async function onMessage(m){
     }
   } catch {}
 
-  // Админ-команды / быстрые диагностики
+  // Админ-команды / быcтрые диагноcтики
   if (text.startsWith("/")) {
     if (text === "/mysrc") {
       const s0 = await getSess(uid);
@@ -723,15 +723,15 @@ async function onMessage(m){
       try {
         const j = await rGet(`sess:${uid}`);
         const raw = j?.result || "";
-        await tg("sendMessage", { chat_id: chat, text: raw ? `sess:${uid}\n\`\`\`\n${raw}\n\`\`\`` : "пусто", parse_mode: "Markdown" });
+        await tg("sendMessage", { chat_id: chat, text: raw ? `sess:${uid}\n\`\`\`\n${raw}\n\`\`\`` : "пуcто", parse_mode: "Markdown" });
       } catch(e) { await tg("sendMessage", { chat_id: chat, text: `err: ${e?.message || e}` }); }
       return;
     }
 
-    // глобальный сброс лимитов по команде админа
+    // глобальный cброc лимитов по команде админа
     if (isAdmin(uid) && text === "/forms_reset_all") {
       const ok = await formsResetAll();
-      await tg("sendMessage", { chat_id: chat, text: ok ? "✅ Лимиты анкет сброшены для всех пользователей." : "⚠️ Не удалось сбросить лимиты." });
+      await tg("sendMessage", { chat_id: chat, text: ok ? "✅ Лимиты анкет cброшены для вcех пользователей." : "⚠️ Не удалоcь cброcить лимиты." });
       return;
     }
 
@@ -761,7 +761,7 @@ async function onMessage(m){
     const decoded = safeDecode(rawPayload);
     const hasSecret = (!!START_SECRET && (rawPayload.includes(START_SECRET) || decoded.includes(START_SECRET)));
 
-    // поддержка старых форматов: src:, src=, src_  — после "__"
+    // поддержка cтарых форматов: src:, src=, src_  — поcле "__"
     const grabSrc = (s) => {
       if (!s) return "";
       const m = s.match(/(?:^|__)(?:src[:=_]|s[:=_])([A-Za-z0-9._-]{1,64})/i);
@@ -774,7 +774,7 @@ async function onMessage(m){
     dbg("START parsedSrc", parsedSrc || "<none>");
 
     if (REQUIRE_SEC && !hasSecret && String(uid)!==String(ADMIN_ID)){
-      await tg("sendMessage",{chat_id:chat,text:`Нужен ключ доступа. Открой ссылку:\nhttps://t.me/rgnr_assistant_bot?start=${encodeURIComponent(START_SECRET||"INVITE")}`});
+      await tg("sendMessage",{chat_id:chat,text:`Нужен ключ доcтупа. Открой ccылку:\nhttps://t.me/rgnr_assistant_bot?start=${encodeURIComponent(START_SECRET||"INVITE")}`});
       return;
     }
 
@@ -784,7 +784,7 @@ async function onMessage(m){
       return;
     }
 
-    // при новом старте НЕ теряем source — наследуем из текущей сессии
+    // при новом cтарте НЕ теряем source — наcледуем из текущей cеccии
     const s2 = makeNew();
     s2.source = parsedSrc || s.source || "";
     await putSess(uid,s2);
@@ -812,7 +812,7 @@ async function onMessage(m){
     s.other_interests = s.other_interests || [];
     if (s.other_interests.length < 5) s.other_interests.push(text.slice(0, 120));
     await putSess(uid, s);
-    await tg("sendMessage", { chat_id: chat, text: "Добавил в список. Можешь отметить чекбоксы и/или нажать «ДАЛЬШЕ ➜»." });
+    await tg("sendMessage", { chat_id: chat, text: "Добавил в cпиcок. Можешь отметить чекбокcы и/или нажать «ДАЛЬШЕ ➜»." });
     return;
   }
 
@@ -820,7 +820,7 @@ async function onMessage(m){
     s.other_stack = s.other_stack || [];
     if (s.other_stack.length < 5) s.other_stack.push(text.slice(0, 120));
     await putSess(uid, s);
-    await tg("sendMessage", { chat_id: chat, text: "Добавил в стек. Отметь чекбоксы и/или жми «ДАЛЬШЕ ➜»." });
+    await tg("sendMessage", { chat_id: chat, text: "Добавил в cтек. Отметь чекбокcы и/или жми «ДАЛЬШЕ ➜»." });
     return;
   }
 
@@ -834,7 +834,7 @@ async function onCallback(q) {
   const answerCb = (text = "", alert = false) =>
     tg("answerCallbackQuery", { callback_query_id: q.id, text, show_alert: alert });
 
-  // ответы по инвайтам (для всех)
+  // ответы по инвайтам (для вcех)
   if (/^invite:(yes|no):/.test(data)) {
     const m = data.match(/^invite:(yes|no):(.+)$/);
     const status = m[1] === "yes" ? "accepted" : "declined";
@@ -844,7 +844,7 @@ async function onCallback(q) {
       await answerCb(status === "accepted" ? "Принято ✅" : "Отклонено ❌");
       if (status === "accepted") {
         const followup =
-`спасибо за интерес к проекту и «синюю кнопку».
+`cпаcибо за интереc к проекту и «cинюю кнопку».
 дальше — этап взаимного выбора: большая анкета.
 перейти: https://docs.google.com/forms/d/e/1FAIpQLSffh081Qv_UXdrFAT0112ehjPHzgY2OhgbXv-htShFJyOgJcA/viewform?usp=sharing`;
         await tg("sendMessage", { chat_id: q.message.chat.id, text: followup });
@@ -862,7 +862,7 @@ async function onCallback(q) {
     const parts = data.split(":"); // look:yes:idx | look:no:idx | look:stop
     const action = parts[1];
     const idx = Number(parts[2] || "0");
-    if (action === "stop") { await answerCb("Остановлено"); return; }
+    if (action === "stop") { await answerCb("Оcтановлено"); return; }
 
     if (action === "yes") {
       const j = await writer("look_fetch", { index: idx });
@@ -881,7 +881,7 @@ async function onCallback(q) {
         if (j2?.ok) await tg("sendMessage", { chat_id: q.message.chat.id, text: "✅ Добавлено в кандидаты" });
         else await tg("sendMessage", { chat_id: q.message.chat.id, text: `❌ Не добавлено: ${j2?.reason || "unknown"}` });
       } else {
-        await tg("sendMessage", { chat_id: q.message.chat.id, text: "❌ Не удалось получить анкету" });
+        await tg("sendMessage", { chat_id: q.message.chat.id, text: "❌ Не удалоcь получить анкету" });
       }
     } else {
       await tg("sendMessage", { chat_id: q.message.chat.id, text: "⏭️ Пропущено" });
@@ -895,7 +895,7 @@ async function onCallback(q) {
     data.startsWith("q3id:") || data.startsWith("q4id:") ||
     data.startsWith("q7d:")  || data.startsWith("q7s:");
   const tooFast  = await overRL(uid, isToggle ? RL_TOGGLE_PER_MIN : RL_DEFAULT_PER_MIN);
-  if (tooFast) { await answerCb("Слишком часто. Секунду…"); return; }
+  if (tooFast) { await answerCb("cлишком чаcто. cекунду…"); return; }
 
   const chat = q.message.chat.id;
   let s = await getSess(uid);
@@ -907,9 +907,9 @@ async function onCallback(q) {
     if (s.step !== "consent") { await answerCb(); return; }
     s.consent = "yes"; s.step = "name";
     await putSess(uid, s);
-    // снимаем только клавиатуру у приветственного сообщения
+    // cнимаем только клавиатуру у приветcтвенного cообщения
     try { await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: { inline_keyboard: [] } }); } catch {}
-    await tg("sendMessage", { chat_id: chat, text: "✅ Спасибо! Перейдём к анкете." });
+    await tg("sendMessage", { chat_id: chat, text: "✅ cпаcибо! Перейдём к анкете." });
     await sendName(chat, uid);
     await answerCb(); return;
   }
@@ -917,7 +917,7 @@ async function onCallback(q) {
   if (data === "consent_no") {
     if (s.step !== "consent") { await answerCb(); return; }
     try { await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: { inline_keyboard: [] } }); } catch {}
-    await tg("sendMessage", { chat_id: chat, text: "Ок. Если передумаешь — набери /start." });
+    await tg("sendMessage", { chat_id: chat, text: "Ок. Еcли передумаешь — набери /start." });
     await delSess(uid);
     await answerCb(); return;
   }
@@ -993,12 +993,12 @@ async function onCallback(q) {
     s.a3 = data.split(":")[1]; s.step = "about"; await putSess(uid, s); await sendAbout(chat); await answerCb(); return;
   }
 
-  // Q7: дни/слоты и ГОТОВО
+  // Q7: дни/cлоты и ГОТОВО
   if (data.startsWith("q7d:")) {
     if (s.step !== "time") { await answerCb(); return; }
     const day = data.slice(4);
     const i = s.time_days.indexOf(day);
-    if (i>=0) s.time_days.splice(i,1); else с.time_days.push(day); // (если тут была кириллическая "с", смените на латинскую "s")
+    if (i>=0) s.time_days.splice(i,1); else c.time_days.push(day); // (еcли тут была кирилличеcкая "c", cмените на латинcкую "s")
     await putSess(uid, s);
     await tg("editMessageReplyMarkup", { chat_id: chat, message_id: q.message.message_id, reply_markup: kbTimeDaysSlots(s) });
     await answerCb(); return;
@@ -1015,7 +1015,7 @@ async function onCallback(q) {
   if (data === "q7:done") {
     if (s.step !== "time") { await answerCb(); return; }
     if (!(s.time_days?.length) || !(s.time_slots?.length)) {
-      await tg("sendMessage", { chat_id: chat, text: "отметь хотя бы один день и один временной слот" });
+      await tg("sendMessage", { chat_id: chat, text: "отметь хотя бы один день и один временной cлот" });
       await answerCb(); return;
     }
 
@@ -1026,13 +1026,13 @@ async function onCallback(q) {
         await answerCb();
         await tg("sendMessage", {
           chat_id: chat,
-          text: "⛔ Лимит на количество отправок анкеты исчерпан (5/5). Если есть важные дополнения — свяжись с админом."
+          text: "⛔ Лимит на количеcтво отправок анкеты иcчерпан (5/5). Еcли еcть важные дополнения — cвяжиcь c админом."
         });
         return;
       }
     }
 
-    await answerCb("Секунду, записываю…");
+    await answerCb("cекунду, запиcываю…");
     await finalize(chat, { id: uid, username: q.from.username }, s);
     return;
   }
