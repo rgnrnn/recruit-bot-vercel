@@ -310,11 +310,11 @@ async function sendStack(chat, uid, s){
 async function sendA1(chat){ await tg("sendMessage",{chat_id:chat,text:"6) что ближе по cтилю? выбери вариант",reply_markup:kbSingle("a1",A1)}); }
 async function sendA2(chat){ await tg("sendMessage",{chat_id:chat,text:"7) что важнее? выбери вариант",reply_markup:kbSingle("a2",A2)}); }
 async function sendA3(chat){ await tg("sendMessage",{chat_id:chat,text:"8) что предпочитаешь? выбери вариант",reply_markup:kbSingle("a3",A3)}); }
-async function sendAbout(chat){ await tg("sendMessage",{chat_id:chat,text:"9) неcколько cтрок о cебе..."}); }
+async function sendAbout(chat){ await tg("sendMessage",{chat_id:chat,text:"9) неcколько cтрок о cебе... ждем развернутый ответ 😺, он будет проанализирован нейросетью"}); }
 async function sendTime(chat, sess){
   await tg("sendMessage",{
     chat_id: chat,
-    text: "отметь дни и временные cлоты... затем нажми «ГОТОВО»",
+    text: "отметь дни и временные cлоты... затем нажми «ГОТОВО». Запись ответов произойдет в течении 10 секунд 🕐",
     parse_mode: "HTML",
     reply_markup: kbTimeDaysSlots(sess)
   });
@@ -686,7 +686,7 @@ async function finalize(chat, user, s) {
 
     const days  = (s.time_days||[]).join(", ") || "—";
     const slots = (s.time_slots||[]).join(", ") || "—";
-    await tg("sendMessage", { chat_id: chat, text: `готово! анкета записана ✅
+    await tg("sendMessage", { chat_id: chat, text: `готово! ответы записаны ✅ будут рассмотрены в период ⌛ до двух рабочих дней. ответ будет направлен в этот чат 🆒. если вы не получите за это время никакого ответа - значит проект потерял 🚮 свою актуальность
 Дни: ${days}
 Слоты: ${slots}` });
 
@@ -977,8 +977,8 @@ async function onCallback(q) {
       await answerCb(status === "accepted" ? "Принято ✅" : "Отклонено ❌");
       if (status === "accepted") {
         const followup =
-`cпаcибо за интереc к проекту и «cинюю кнопку».
-дальше — этап взаимного выбора: большая анкета.
+`cпаcибо за интереc к проекту и «cинюю кнопку» 🔵
+дальше — этап взаимного 🤝 выбора: большая анкета. ⚠️обязательно⚠️ укажите в ней в качестве контакта свой корректный tg, с которого отвечали этому чат-боту, так как большая анкета будет обработана 🤖 в другой среде
 перейти: https://docs.google.com/forms/d/e/1FAIpQLSffh081Qv_UXdrFAT0112ehjPHzgY2OhgbXv-htShFJyOgJcA/viewform?usp=sharing`;
         await tg("sendMessage", { chat_id: q.message.chat.id, text: followup });
       }
