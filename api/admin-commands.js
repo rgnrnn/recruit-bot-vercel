@@ -10,6 +10,18 @@ const REQUIRE_SEC  = /^1|true$/i.test(process.env.REQUIRE_SECRET || "");
 const BOT_USERNAME = (process.env.BOT_USERNAME || "").replace(/^@/,"");
 function isAdmin(uid) { return String(uid) === ADMIN_ID; }
 
+
+
+console.log("[env] REDIS_URL:", process.env.UPSTASH_REDIS_REST_URL);
+console.log("[env] REDIS_TOKEN_LEN:", (process.env.UPSTASH_REDIS_REST_TOKEN||"").length);
+
+
+
+
+
+
+
+
 async function callWriter(op, payload = {}, asText = false) {
   if (!URL || !KEY) return { ok: false, reason: "env_missing" };
   const body = { secret: KEY, op, ...payload };
